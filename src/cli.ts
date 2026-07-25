@@ -4755,6 +4755,7 @@ botmux v${getVersion()} — IM ↔ AI 编程 CLI 桥接
        --card-file <path>              直接发送飞书/Lark interactive 卡片 JSON
        --card-json <json>              直接发送飞书/Lark interactive 卡片 JSON 字符串
        --mention <open_id:name>        @提及（可重复）
+       --mention-owner-digest <sha256> 从当前 Bot allowlist 精确解析并 @ 受控任务发布人
        --mention-back                  @回本轮触发消息的发送者（open_id 自动取自会话）
        --no-mention                    明确声明本条不@任何人
        --quote <message_id>            指定引用某条消息（普通群，默认引用本轮触发消息）
@@ -6164,6 +6165,14 @@ async function cmdSend(rest: string[]): Promise<void> {
     process.exit(1);
   }
   const mentionArgs = argValues(rest, '--mention');  // "open_id:Display Name"
+  const ownerSubjectDigest = argValue(rest, '--mention-owner-digest');
+  if (
+    flagPresentButValueMissing(rest, '--mention-owner-digest')
+    || (ownerSubjectDigest !== undefined && !/^[0-9a-f]{64}$/.test(ownerSubjectDigest))
+  ) {
+    console.error('botmux send: --mention-owner-digest 必须是 64 位小写十六进制 SHA-256');
+    process.exit(2);
+  }
   const contentFile = argValue(rest, '--content-file');
   if (customCardRequested && contentFile) {
     console.error('botmux send: --card-file/--card-json 不能与 --content-file 混用');
@@ -6202,6 +6211,10 @@ async function cmdSend(rest: string[]): Promise<void> {
   // @ hard-gate: every reply must explicitly choose one of these.
   const mentionBack = rest.includes('--mention-back');
   const noMention = rest.includes('--no-mention');
+  if (ownerSubjectDigest && (mentionArgs.length > 0 || mentionBack || noMention)) {
+    console.error('botmux send: --mention-owner-digest 不能与其他 mention 模式混用');
+    process.exit(2);
+  }
   // --attention[=kind]: raise a hand — post this message AND light the dashboard
   // needs-you column for this session. Parsed specially (not argValue) so a bare
   // `--attention "我卡住了"` doesn't eat the message as the flag value.
@@ -6565,7 +6578,7 @@ async function cmdSend(rest: string[]): Promise<void> {
   const mentionGate = validateMentionDecision({
     enabled: config.send.requireMentionDecision,
     sendTopLevel,
-    hasMentionArgs: mentionArgs.length > 0,
+    hasMentionArgs: mentionArgs.length > 0 || !!ownerSubjectDigest,
     mentionBack,
     noMention,
     hasQuoteTargetSender: !!replyTargetSenderOpenId,
@@ -6594,7 +6607,21 @@ async function cmdSend(rest: string[]): Promise<void> {
   if (envPinnedRiffBot) { try { registerBot(envPinnedRiffBot); } catch { /* */ } }
 
   const { sendMessage, replyMessage, uploadImage, uploadFile, MessageWithdrawnError } = await import('./im/lark/client.js');
+  const { resolveAllowedUnionSubjectOpenId } = await import('./im/lark/client.js');
   const appId = s.larkAppId!;
+  if (ownerSubjectDigest) {
+    const ownerConfig = loadBotConfigs().find((candidate) => candidate.larkAppId === appId);
+    const ownerOpenId = await resolveAllowedUnionSubjectOpenId(
+      appId,
+      ownerConfig?.allowedUsers ?? [],
+      ownerSubjectDigest,
+    );
+    if (!ownerOpenId) {
+      console.error('botmux send: 当前 Bot allowlist 无法唯一解析任务发布人');
+      process.exit(2);
+    }
+    mentions.push({ open_id: ownerOpenId, name: '' });
+  }
   // Effective target chat for top-level mode (defaults to session's chat)
   const targetChatId = overrideChatId ?? s.chatId;
   // Chat-scope sessions (普通群整群一会话) post to chatId without
@@ -7882,6 +7909,7 @@ botmux create-group — 用一组机器人新建飞书群
 用法:
   botmux create-group --bot <name|larkAppId> [--bot ...] [--name "群名"]
                       [--working-dir <path>]
+                      [--owner-subject-digest <sha256>]
                       [--kickoff-bot <open_id> --kickoff-prompt "文本"]
                       [--json-status]
 
@@ -7894,6 +7922,9 @@ botmux create-group — 用一组机器人新建飞书群
   --working-dir <path>
                  可选；创建成功后，把新群为所有成功入群的 bot 绑定到该目录（等价于逐个 /oncall bind），
                  下次在群里开新话题时直接使用该目录，跳过仓库选择卡片。也可写作 --cwd / --dir。
+  --owner-subject-digest <sha256>
+                 可选；只从 creator 的 union_id allowlist 中精确选择该摘要对应的发布人，
+                 用于受控 Web 任务建群。零个或多个匹配都会在建群前拒绝。
   --kickoff-bot <open_id>  可选；建群成功后由 creator @ 该 bot 并发送 --kickoff-prompt，
                  触发该 bot 自动开始工作（如 PR review）。需配合 --kickoff-prompt 使用。
                  该 bot 必须已在 --bot 列表中（即已是群成员）。
@@ -7925,9 +7956,17 @@ botmux create-group — 用一组机器人新建飞书群
   const botRefs = argValues(rest, '--bot');
   const name = argValue(rest, '--name');
   const workingDirArg = argValue(rest, '--working-dir', '--cwd', '--dir');
+  const ownerSubjectDigest = argValue(rest, '--owner-subject-digest');
   const kickoffBot = argValue(rest, '--kickoff-bot');
   const kickoffPrompt = argValue(rest, '--kickoff-prompt');
   const jsonStatus = rest.includes('--json-status');
+  if (
+    flagPresentButValueMissing(rest, '--owner-subject-digest')
+    || (ownerSubjectDigest !== undefined && !/^[0-9a-f]{64}$/.test(ownerSubjectDigest))
+  ) {
+    console.error('--owner-subject-digest 必须是 64 位小写十六进制 SHA-256。');
+    process.exit(1);
+  }
 
   let bindWorkingDir: string | undefined;
   let bindWorkingDirResolved: string | undefined;
@@ -8022,14 +8061,29 @@ botmux create-group — 用一组机器人新建飞书群
   // resolveAllowedUsers converts emails → open_ids via creator's Lark client.
   const creatorCfg = fullConfigs.find(c => c.larkAppId === creatorLarkAppId);
   const allowedRaw = creatorCfg?.allowedUsers ?? [];
-  const { resolveAllowedUsers } = await import('./im/lark/client.js');
+  const {
+    resolveAllowedUnionSubjectOpenId,
+    resolveAllowedUsers,
+  } = await import('./im/lark/client.js');
   let creatorAllowedOpenIds: string[] = [];
   try {
-    creatorAllowedOpenIds = await resolveAllowedUsers(creatorLarkAppId, allowedRaw);
+    creatorAllowedOpenIds = ownerSubjectDigest
+      ? [
+          await resolveAllowedUnionSubjectOpenId(
+            creatorLarkAppId,
+            allowedRaw,
+            ownerSubjectDigest,
+          ),
+        ].filter((value): value is string => !!value)
+      : await resolveAllowedUsers(creatorLarkAppId, allowedRaw);
   } catch (err: any) {
     console.error(`⚠️  解析 creator allowedUsers 失败: ${err?.message ?? err}（继续创建空群）`);
   }
   const targetOpenId = creatorAllowedOpenIds[0];
+  if (ownerSubjectDigest && !targetOpenId) {
+    console.error('任务发布人无法解析为 creator App 的 open_id；建群已停止。');
+    process.exit(1);
+  }
   if (!targetOpenId) {
     console.error('⚠️  creator bot 的 allowedUsers 没有可用 open_id — 将创建仅含 bot 的群（跳过邀请/转让/@通知）。');
   }

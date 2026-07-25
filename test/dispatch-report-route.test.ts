@@ -79,11 +79,12 @@ async function postReport(input: {
   capability?: string;
   signed?: boolean;
   dispatchRoot?: string;
+  content?: string;
 } = {}) {
   const path = '/api/sessions/session-source/report';
   const body = {
     dispatchRoot: input.dispatchRoot ?? 'om_dispatch',
-    content: '[MOSA_WORKBOARD_OUTCOME:review_ready]\n\nTask complete.',
+    content: input.content ?? '[MOSA_WORKBOARD_OUTCOME:review_ready]\n\nTask complete.',
     ...(input.capability === undefined
       ? { originCapability: CAPABILITY, originTurnId: 'om_kickoff' }
       : input.capability
@@ -109,7 +110,8 @@ async function postReport(input: {
 describe('POST /api/sessions/:sessionId/report', () => {
   it('accepts the live session capability and proxies a host-authenticated trigger', async () => {
     await setup();
-    vi.spyOn(workerPool, 'findActiveBySessionId').mockReturnValue(sourceSession());
+    const source = sourceSession();
+    vi.spyOn(workerPool, 'findActiveBySessionId').mockReturnValue(source);
     const proxy = vi.spyOn(daemonIpc, 'fetchDaemonIpc').mockResolvedValue(
       new Response(JSON.stringify({ ok: true, triggerId: 'trigger-1' }), {
         status: 200,
@@ -126,6 +128,14 @@ describe('POST /api/sessions/:sessionId/report', () => {
       reportedTo: 'session-orchestrator',
       viaRegistry: true,
       triggerId: 'trigger-1',
+      lifecycleDelivery: 'target-session',
+      lifecycleDuplicate: false,
+      orchestratorDelivery: 'sent',
+    });
+    expect(source.reportedWorkboardLifecycle).toMatchObject({
+      dispatchRoot: 'om_dispatch',
+      outcome: 'review_ready',
+      turnId: 'om_kickoff',
     });
     expect(proxy).toHaveBeenCalledOnce();
     const [port, path, init] = proxy.mock.calls[0];
@@ -164,6 +174,52 @@ describe('POST /api/sessions/:sessionId/report', () => {
     expect(await response.json()).toMatchObject({
       ok: true,
       triggerId: 'trigger-host',
+    });
+  });
+
+  it('keeps correlated Workboard completion authoritative when the PM daemon is offline', async () => {
+    await setup();
+    const source = sourceSession();
+    vi.spyOn(workerPool, 'findActiveBySessionId').mockReturnValue(source);
+    vi.mocked(daemonDiscovery.findOnlineDaemon).mockReturnValue(undefined);
+
+    const response = await postReport();
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      delivery: 'target-session',
+      reportedTo: 'session-source',
+      lifecycleDelivery: 'target-session',
+      lifecycleDuplicate: false,
+      orchestratorDelivery: 'offline',
+    });
+    expect(source.reportedWorkboardLifecycle).toMatchObject({
+      dispatchRoot: 'om_dispatch',
+      outcome: 'review_ready',
+    });
+  });
+
+  it('rejects a conflicting terminal outcome for the same dispatch', async () => {
+    await setup();
+    const source = sourceSession();
+    vi.spyOn(workerPool, 'findActiveBySessionId').mockReturnValue(source);
+    vi.spyOn(daemonIpc, 'fetchDaemonIpc').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, triggerId: 'trigger-first' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+
+    expect((await postReport()).status).toBe(200);
+    const conflict = await postReport({
+      content: '[MOSA_WORKBOARD_OUTCOME:blocked]\n\nDifferent terminal outcome.',
+    });
+
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toEqual({
+      ok: false,
+      error: 'report_outcome_conflict',
     });
   });
 

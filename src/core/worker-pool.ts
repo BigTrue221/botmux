@@ -158,6 +158,12 @@ function schedulePendingIdleLifecycleHook(
     source: 'screen_update' | 'screenshot_uploaded' | 'final_output';
   },
 ): void {
+  if (
+    input.turnId
+    && ds.reportedWorkboardLifecycle?.turnId === input.turnId
+  ) {
+    return;
+  }
   const previous = ds.pendingIdleLifecycleHook;
   if (previous) {
     if (previous.turnId === input.turnId) {
@@ -181,6 +187,42 @@ function schedulePendingIdleLifecycleHook(
   }, STRUCTURED_IDLE_HOOK_DELAY_MS);
   timer.unref?.();
   ds.pendingIdleLifecycleHook = { ...input, timer };
+}
+
+export function emitReportedWorkboardLifecycle(
+  ds: DaemonSession,
+  input: {
+    dispatchRoot: string;
+    outcome: 'review_ready' | 'blocked' | 'cancelled' | 'undeclared';
+    turnId?: string;
+    content: string;
+  },
+): { ok: true; duplicate: boolean } | { ok: false; error: 'report_outcome_conflict' | 'lifecycle_suppressed' } {
+  const previous = ds.reportedWorkboardLifecycle;
+  if (previous?.dispatchRoot === input.dispatchRoot) {
+    if (previous.outcome !== input.outcome) {
+      return { ok: false, error: 'report_outcome_conflict' };
+    }
+    return { ok: true, duplicate: true };
+  }
+
+  clearPendingIdleLifecycleHook(ds);
+  const emitted = emitSessionLifecycleHook(ds, 'session.idle', {
+    prevState: ds.lastScreenStatus,
+    newState: 'idle',
+    transition: 'enter',
+    source: 'botmux_report',
+    content: input.content,
+  });
+  if (!emitted) return { ok: false, error: 'lifecycle_suppressed' };
+
+  ds.reportedWorkboardLifecycle = {
+    dispatchRoot: input.dispatchRoot,
+    outcome: input.outcome,
+    ...(input.turnId ? { turnId: input.turnId } : {}),
+    emittedAt: Date.now(),
+  };
+  return { ok: true, duplicate: false };
 }
 
 function workerForkEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {

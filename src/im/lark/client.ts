@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, createWriteStream, mkdirSync, existsSync } from 'node:fs';
 import { dirname, extname, basename, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
+import { createHash } from 'node:crypto';
 import { Client } from '@larksuiteoapi/node-sdk';
 import { getBotClient, getAllBots, getBot, formatLarkError } from '../../bot-registry.js';
 import { loadBotConfigs } from '../../bot-registry.js';
@@ -1005,6 +1006,40 @@ export async function uploadFile(larkAppId: string, filePath: string, opts?: { d
  * (matched case-insensitively against the API's returned email) so the map key
  * always equals what's in `allowedUsers`. Unresolvable emails are dropped.
  */
+export function selectAllowedUnionIdBySubjectDigest(raw: string[], subjectDigest: string): string | null {
+  if (!/^[0-9a-f]{64}$/.test(subjectDigest)) return null;
+  const matches = raw.filter((value) => (
+    /^on_[A-Za-z0-9]+$/.test(value)
+    && createHash('sha256')
+      .update(Buffer.concat([Buffer.from('lark-union-v1\0', 'utf8'), Buffer.from(value, 'utf8')]))
+      .digest('hex') === subjectDigest
+  ));
+  return matches.length === 1 ? matches[0] : null;
+}
+
+export async function resolveAllowedUnionSubjectOpenId(
+  larkAppId: string,
+  raw: string[],
+  subjectDigest: string,
+): Promise<string | null> {
+  const selected = selectAllowedUnionIdBySubjectDigest(raw, subjectDigest);
+  if (!selected) return null;
+  try {
+    const c = getBotClient(larkAppId);
+    const res = await larkGet(
+      c,
+      `/open-apis/contact/v3/users/${encodeURIComponent(selected)}`,
+      { user_id_type: 'union_id' },
+    );
+    const openId = res?.data?.user?.open_id;
+    return res?.code === 0 && typeof openId === 'string' && /^ou_[A-Za-z0-9]+$/.test(openId)
+      ? openId
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function resolveAllowedUsersWithMap(
   larkAppId: string, raw: string[],
 ): Promise<{ resolved: string[]; map: Map<string, string>; errored?: boolean }> {

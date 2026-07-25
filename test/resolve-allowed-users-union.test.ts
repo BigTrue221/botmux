@@ -1,5 +1,10 @@
+import { createHash } from 'node:crypto';
 import { describe, it, expect, vi } from 'vitest';
-import { resolveAllowedUsersWithMap } from '../src/im/lark/client.js';
+import {
+  resolveAllowedUnionSubjectOpenId,
+  resolveAllowedUsersWithMap,
+  selectAllowedUnionIdBySubjectDigest,
+} from '../src/im/lark/client.js';
 import { registerBot } from '../src/bot-registry.js';
 import { logger } from '../src/utils/logger.js';
 
@@ -28,6 +33,48 @@ function stubClient(userGet: any, batchGetId?: any) {
 }
 
 describe('resolveAllowedUsersWithMap — on_ union_id entries (PR#72 lockout fix)', () => {
+  it('selects exactly the union_id bound to a domain-separated publisher digest', () => {
+    const publisher = 'on_publisher';
+    const digest = createHash('sha256')
+      .update(`lark-union-v1\0${publisher}`, 'utf8')
+      .digest('hex');
+
+    expect(selectAllowedUnionIdBySubjectDigest(
+      ['on_other', publisher, 'ou_legacy'],
+      digest,
+    )).toBe(publisher);
+    expect(selectAllowedUnionIdBySubjectDigest(
+      [publisher, publisher],
+      digest,
+    )).toBeNull();
+    expect(selectAllowedUnionIdBySubjectDigest(
+      ['on_other'],
+      digest,
+    )).toBeNull();
+  });
+
+  it('resolves the selected publisher without logging either external identity', async () => {
+    const publisher = 'on_privatepublisher';
+    const digest = createHash('sha256')
+      .update(`lark-union-v1\0${publisher}`, 'utf8')
+      .digest('hex');
+    const info = vi.spyOn(logger, 'info');
+    stubClient(async () => ({
+      code: 0,
+      data: { user: { open_id: 'ou_privatepublisher' } },
+    }));
+
+    await expect(resolveAllowedUnionSubjectOpenId(
+      APP,
+      ['on_other', publisher],
+      digest,
+    )).resolves.toBe('ou_privatepublisher');
+    const renderedLogs = info.mock.calls.flat().map(String).join('\n');
+    expect(renderedLogs).not.toContain(publisher);
+    expect(renderedLogs).not.toContain('ou_privatepublisher');
+    info.mockRestore();
+  });
+
   it('resolves a bare on_ entry to this app open_id so canTalk/canOperate can match', async () => {
     stubClient(async ({ path, params }: any) => {
       expect(params.user_id_type).toBe('union_id');

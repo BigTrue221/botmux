@@ -192,6 +192,15 @@ export interface DaemonSession {
     content: string;
     source: 'screen_update' | 'screenshot_uploaded' | 'final_output';
   };
+  /** A correlated Workboard `botmux report` is itself the terminal authority.
+   * Keep its exact turn in memory so trailing screen/final-output events cannot
+   * emit a second lifecycle for the same dispatch. */
+  reportedWorkboardLifecycle?: {
+    dispatchRoot: string;
+    outcome: 'review_ready' | 'blocked' | 'cancelled' | 'undeclared';
+    turnId?: string;
+    emittedAt: number;
+  };
   /** Riff AIO Sandbox web terminal link. When set, buildTerminalUrl returns
    *  this URL directly (bypassing the local terminal proxy) so the dashboard
    *  "Web终端" button opens the riff sandbox. In-memory only — re-sent by the

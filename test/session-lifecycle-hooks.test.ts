@@ -103,7 +103,11 @@ import {
   emitSessionStateTransitionHook,
   setSessionLifecycleShutdown,
 } from '../src/services/session-lifecycle-hooks.js';
-import { initWorkerPool, __testOnly_setupWorkerHandlers } from '../src/core/worker-pool.js';
+import {
+  emitReportedWorkboardLifecycle,
+  initWorkerPool,
+  __testOnly_setupWorkerHandlers,
+} from '../src/core/worker-pool.js';
 import type { DaemonSession } from '../src/core/types.js';
 
 function makeFakeWorker() {
@@ -353,6 +357,51 @@ describe('worker-pool lifecycle hook integration', () => {
     expect(sessionReplyMock).not.toHaveBeenCalled();
     expect(ds.lastBridgeEmittedUuid).toBe(
       `${ds.session.sessionId}:uuid-structured-first`,
+    );
+  });
+
+  it('uses botmux report as terminal authority and suppresses the trailing final lifecycle', () => {
+    vi.useFakeTimers();
+    const worker = makeFakeWorker();
+    const ds = makeDs({ worker, lastScreenStatus: 'working' });
+    ds.session.cliId = 'traex';
+    __testOnly_setupWorkerHandlers(ds, worker);
+
+    expect(emitReportedWorkboardLifecycle(ds, {
+      dispatchRoot: 'om_dispatch',
+      outcome: 'review_ready',
+      turnId: 'turn-reported',
+      content: '[MOSA_WORKBOARD_OUTCOME:review_ready]\n\nreported result',
+    })).toEqual({ ok: true, duplicate: false });
+    expect(emitReportedWorkboardLifecycle(ds, {
+      dispatchRoot: 'om_dispatch',
+      outcome: 'review_ready',
+      turnId: 'turn-reported',
+      content: '[MOSA_WORKBOARD_OUTCOME:review_ready]\n\nreported result',
+    })).toEqual({ ok: true, duplicate: true });
+
+    worker.emit('message', {
+      type: 'final_output',
+      sessionId: ds.session.sessionId,
+      content: '[MOSA_WORKBOARD_OUTCOME:review_ready]\n\nreported result',
+      lastUuid: 'uuid-reported',
+      turnId: 'turn-reported',
+    });
+    worker.emit('message', {
+      type: 'screen_update',
+      content: 'idle screen after report',
+      status: 'idle',
+      turnId: 'turn-reported',
+    });
+    vi.advanceTimersByTime(1_501);
+
+    expect(emitHookEventMock).toHaveBeenCalledTimes(1);
+    expect(emitHookEventMock).toHaveBeenCalledWith(
+      'session.idle',
+      expect.objectContaining({
+        source: 'botmux_report',
+        content: '[MOSA_WORKBOARD_OUTCOME:review_ready]\n\nreported result',
+      }),
     );
   });
 

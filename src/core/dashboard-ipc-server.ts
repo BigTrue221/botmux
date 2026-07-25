@@ -65,7 +65,7 @@ import { readGlobalConfig } from '../global-config.js';
 import { normalizeChatReplyMode, setChatReplyMode, type ChatReplyMode } from '../services/chat-reply-mode-store.js';
 import * as chatFirstSeenStore from '../services/chat-first-seen-store.js';
 import * as scheduler from './scheduler.js';
-import { listActiveSessions, findActiveBySessionId, closeSession, getActiveSessionsRegistry, transferSession, deliverWriteLinkCardToOwners, forkWorker, suspendWorker, killWorker } from './worker-pool.js';
+import { listActiveSessions, findActiveBySessionId, closeSession, getActiveSessionsRegistry, transferSession, deliverWriteLinkCardToOwners, emitReportedWorkboardLifecycle, forkWorker, suspendWorker, killWorker } from './worker-pool.js';
 import { findOnlineDaemon, listOnlineDaemons } from '../utils/daemon-discovery.js';
 import { getChatMode, replyMessage, sendMessage, resolveUnionIdFromOpenId, listThreadMessages, listChatMessages, listChatBotMembers, getUserProfile, getUserProfileStrict, resolveAllowedUsersWithMap, type ChatBotMember } from '../im/lark/client.js';
 import { parseApiMessage, cardContentHasUpgradeFallback, resolveMergedCardContent } from '../im/lark/message-parser.js';
@@ -1833,8 +1833,64 @@ ipcRoute('POST', '/api/sessions/:sessionId/report', async (req, res, params) => 
     return jsonRes(res, 409, { ok: false, error: 'dispatch_binding_mismatch' });
   }
 
+  // #region debug-point A:report-correlation-authority
+  const debugTraceId = `report-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  void fetch('http://127.0.0.1:7777/event', {
+    method: 'POST',
+    body: JSON.stringify({
+      sessionId: 'rrrrr-task-product-failures',
+      runId: 'post-fix',
+      hypothesisId: 'A',
+      traceId: debugTraceId,
+      location: 'src/core/dashboard-ipc-server.ts:report-binding',
+      msg: '[DEBUG] target daemon accepted a bound task report',
+      data: {
+        bindingHasWorkboardCorrelation: /^Workboard run run_[A-Za-z0-9_-]{1,128} dispatch rds_[A-Za-z0-9_-]{1,128}$/.test(
+          typeof entry.title === 'string' ? entry.title : '',
+        ),
+        reportOutcome: content.match(/^\[MOSA_WORKBOARD_OUTCOME:(review_ready|blocked|cancelled)\]/)?.[1] ?? 'missing',
+        targetAppExact: entry.targetAppIds[0] === ds.larkAppId,
+        targetChatExact: entry.targetChatId === ds.chatId,
+      },
+      ts: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
+
+  const workboardBinding = typeof entry.title === 'string'
+    && /^Workboard run [A-Za-z0-9][A-Za-z0-9._:-]{0,63} dispatch [A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(entry.title);
+  const outcomeMatches = [
+    ...content.matchAll(/\[MOSA_WORKBOARD_OUTCOME:(review_ready|blocked|cancelled)\]/g),
+  ];
+  const declaredOutcome = outcomeMatches.length === 1 && outcomeMatches[0].index === 0
+    ? outcomeMatches[0][1] as 'review_ready' | 'blocked' | 'cancelled'
+    : undefined;
+  const workboardLifecycle = workboardBinding
+    ? emitReportedWorkboardLifecycle(ds, {
+        dispatchRoot,
+        outcome: declaredOutcome ?? 'undeclared',
+        turnId: typeof body.originTurnId === 'string'
+          ? body.originTurnId
+          : ds.managedTurnOrigin?.turnId,
+        content,
+      })
+    : undefined;
+  if (workboardLifecycle && !workboardLifecycle.ok) {
+    return jsonRes(res, 409, { ok: false, error: workboardLifecycle.error });
+  }
+  const finishWithoutOrchestrator = (orchestratorDelivery: string) => jsonRes(res, 200, {
+    ok: true,
+    delivery: 'target-session',
+    reportedTo: ds.session.sessionId,
+    viaRegistry: true,
+    lifecycleDelivery: 'target-session',
+    lifecycleDuplicate: workboardLifecycle?.duplicate === true,
+    orchestratorDelivery,
+  });
+
   const orchestrator = findOnlineDaemon(entry.orchAppId);
   if (!orchestrator) {
+    if (workboardLifecycle?.ok) return finishWithoutOrchestrator('offline');
     return jsonRes(res, 503, { ok: false, error: 'orchestrator_daemon_offline' });
   }
   let upstream: Response;
@@ -1871,21 +1927,54 @@ ipcRoute('POST', '/api/sessions/:sessionId/report', async (req, res, params) => 
       }),
     });
   } catch {
+    if (workboardLifecycle?.ok) return finishWithoutOrchestrator('unreachable');
     return jsonRes(res, 502, { ok: false, error: 'orchestrator_daemon_unreachable' });
   }
   const upstreamBody: any = await upstream.json().catch(() => ({}));
   if (!upstream.ok || upstreamBody?.ok !== true) {
+    if (workboardLifecycle?.ok) {
+      return finishWithoutOrchestrator(`rejected:${upstream.status}`);
+    }
     return jsonRes(res, upstream.status >= 400 ? upstream.status : 502, {
       ok: false,
       error: upstreamBody?.error ?? `orchestrator_http_${upstream.status}`,
     });
   }
+  // #region debug-point A:report-relay-result
+  void fetch('http://127.0.0.1:7777/event', {
+    method: 'POST',
+    body: JSON.stringify({
+      sessionId: 'rrrrr-task-product-failures',
+      runId: 'post-fix',
+      hypothesisId: 'A',
+      traceId: debugTraceId,
+      location: 'src/core/dashboard-ipc-server.ts:report-relay-result',
+      msg: '[DEBUG] target daemon completed report relay',
+      data: {
+        upstreamStatus: upstream.status,
+        upstreamAccepted: upstreamBody?.ok === true,
+        triggerIdPresent: typeof upstreamBody?.triggerId === 'string' && upstreamBody.triggerId.length > 0,
+        delivery: 'orchestrator-session',
+        correlatedLifecycleAttempted: workboardLifecycle?.ok === true,
+        correlatedLifecycleDuplicate: workboardLifecycle?.duplicate === true,
+      },
+      ts: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
   return jsonRes(res, 200, {
     ok: true,
     delivery: 'orchestrator-session',
     reportedTo: entry.orchSessionId,
     viaRegistry: true,
     triggerId: upstreamBody.triggerId,
+    ...(workboardLifecycle?.ok
+      ? {
+          lifecycleDelivery: 'target-session',
+          lifecycleDuplicate: workboardLifecycle.duplicate,
+          orchestratorDelivery: 'sent',
+        }
+      : {}),
   });
 });
 
