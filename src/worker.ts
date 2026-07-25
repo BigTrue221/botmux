@@ -2996,6 +2996,14 @@ function emitReadyTurns(opts: { explicitTerminalOnly?: boolean } = {}): void {
     if (shouldSuppressBridgeEmit({ markTimeMs: turn.markTimeMs, isLocal: turn.isLocal, finalText: assistantText }, nextBoundaryMs, markers, adoptMode)) {
       const reason = turn.isLocal ? 'local-typed' : 'model called botmux send within window';
       log(`Bridge fallback suppressed for turn ${turn.turnId.substring(0, 8)} (${reason})`);
+      send({
+        type: 'final_output',
+        content: assistantText,
+        lastUuid,
+        turnId: turn.turnId,
+        suppressDelivery: true,
+        ...(turn.dispatchAttempt !== undefined ? { dispatchAttempt: turn.dispatchAttempt } : {}),
+      });
       continue;
     }
 
@@ -3658,6 +3666,15 @@ function emitReadyCodexTurns(): void {
     const nextBoundaryMs = (i + 1 < ready.length ? ready[i + 1].markTimeMs : nextPendingMarkTimeMs);
     if (shouldSuppressBridgeEmit({ markTimeMs: turn.markTimeMs, isLocal: turn.isLocal, finalText: turn.finalText }, nextBoundaryMs, markers, adoptMode)) {
       log(`Codex bridge fallback suppressed for turn ${turn.turnId.substring(0, 8)} (gate)`);
+      send({
+        type: 'final_output',
+        ...(sourceHermesSessionId ? { sourceHermesSessionId } : {}),
+        content: turn.finalText,
+        lastUuid: turn.turnId,
+        turnId: turn.turnId,
+        suppressDelivery: true,
+        ...(turn.dispatchAttempt !== undefined ? { dispatchAttempt: turn.dispatchAttempt } : {}),
+      });
       continue;
     }
     if (turn.isLocal) {
@@ -4661,6 +4678,14 @@ function handleCodexAppMarker(body: string): void {
       );
       if (sentByModel) {
         log(`${cliName()} final_output suppressed (model already called botmux send)`);
+        send({
+          type: 'final_output',
+          content: payload.content,
+          lastUuid: turnId,
+          turnId,
+          suppressDelivery: true,
+          ...(dispatchAttempt !== undefined ? { dispatchAttempt } : {}),
+        });
         emitTurnTerminal(turnId, 'completed', undefined, dispatchAttempt);
         return;
       }

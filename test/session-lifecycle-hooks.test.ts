@@ -249,9 +249,12 @@ describe('session lifecycle hook helper', () => {
 });
 
 describe('worker-pool lifecycle hook integration', () => {
+  let sessionReplyMock: ReturnType<typeof vi.fn>;
+
   beforeEach(() => {
+    sessionReplyMock = vi.fn(async () => 'om_reply');
     initWorkerPool({
-      sessionReply: vi.fn(async () => 'om_reply'),
+      sessionReply: sessionReplyMock,
       getSessionWorkingDir: () => '/repo',
       getActiveCount: () => 1,
       closeSession: vi.fn(),
@@ -309,6 +312,47 @@ describe('worker-pool lifecycle hook integration', () => {
         source: 'final_output',
         content: '[MOSA_WORKBOARD_OUTCOME:review_ready]\n\nfinal prose',
       }),
+    );
+  });
+
+  it('keeps structured lifecycle output when visible delivery was already sent', () => {
+    vi.useFakeTimers();
+    const worker = makeFakeWorker();
+    const ds = makeDs({ worker, lastScreenStatus: 'working' });
+    ds.session.cliId = 'traex';
+    __testOnly_setupWorkerHandlers(ds, worker);
+
+    worker.emit('message', {
+      type: 'final_output',
+      sessionId: ds.session.sessionId,
+      content: '[MOSA_WORKBOARD_OUTCOME:review_ready]\n\nfinal prose',
+      lastUuid: 'uuid-structured-first',
+      turnId: 'turn-structured-first',
+      suppressDelivery: true,
+    });
+    expect(emitHookEventMock).not.toHaveBeenCalledWith(
+      'session.idle',
+      expect.anything(),
+    );
+
+    worker.emit('message', {
+      type: 'screen_update',
+      content: 'prompt snapshot without outcome marker',
+      status: 'idle',
+      turnId: 'turn-structured-first',
+    });
+    vi.advanceTimersByTime(1_501);
+
+    expect(emitHookEventMock).toHaveBeenCalledWith(
+      'session.idle',
+      expect.objectContaining({
+        source: 'final_output',
+        content: '[MOSA_WORKBOARD_OUTCOME:review_ready]\n\nfinal prose',
+      }),
+    );
+    expect(sessionReplyMock).not.toHaveBeenCalled();
+    expect(ds.lastBridgeEmittedUuid).toBe(
+      `${ds.session.sessionId}:uuid-structured-first`,
     );
   });
 

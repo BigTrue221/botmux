@@ -677,6 +677,10 @@ export type WorkerToDaemon =
       content: string;
       lastUuid: string;
       turnId: string;
+      /** The model already delivered this exact turn through `botmux send`.
+       *  The daemon must still consume the structured content for lifecycle
+       *  hooks, but must not send a duplicate visible reply. */
+      suppressDelivery?: true;
       /** Durable receiver attempt attribution. Final output suppression is
        *  attempt-scoped so a late attempt-N event cannot affect attempt N+1. */
       dispatchAttempt?: number;

@@ -155,19 +155,29 @@ function schedulePendingIdleLifecycleHook(
     turnId?: string;
     prevState?: DaemonSession['lastScreenStatus'];
     content: string;
-    source: 'screen_update' | 'screenshot_uploaded';
+    source: 'screen_update' | 'screenshot_uploaded' | 'final_output';
   },
 ): void {
   const previous = ds.pendingIdleLifecycleHook;
   if (previous) {
     if (previous.turnId === input.turnId) {
-      previous.content = input.content;
+      // A screen redraw may omit the final prose after the structured
+      // transcript has already closed the turn. Keep the authoritative
+      // structured result instead of replacing it with a prompt snapshot.
+      if (previous.source !== 'final_output') {
+        previous.content = input.content;
+        previous.source = input.source;
+      }
       return;
     }
     emitPendingIdleLifecycleHook(ds);
   }
   const timer = setTimeout(() => {
-    emitPendingIdleLifecycleHook(ds);
+    emitPendingIdleLifecycleHook(
+      ds,
+      undefined,
+      input.source === 'final_output' ? 'final_output' : 'structured_idle_timeout',
+    );
   }, STRUCTURED_IDLE_HOOK_DELAY_MS);
   timer.unref?.();
   ds.pendingIdleLifecycleHook = { ...input, timer };
@@ -2907,6 +2917,7 @@ function setupWorkerHandlers(
           ds.pendingIdleLifecycleHook
           && ds.pendingIdleLifecycleHook.turnId === msg.turnId
           && ds.lastScreenStatus === 'idle'
+          && ds.pendingIdleLifecycleHook.source !== 'final_output'
         ) {
           ds.pendingIdleLifecycleHook.content = msg.content;
         }
@@ -3588,6 +3599,28 @@ function setupWorkerHandlers(
           )
         ) {
           emitPendingIdleLifecycleHook(ds, msg.content, 'final_output');
+        } else if (
+          !ds.session.vcMeetingReceiver
+          && isStructuredBridgeFallbackActive(effectiveCliId, isAdopt)
+        ) {
+          // Transcript completion can trigger worker idle synchronously, so
+          // final_output may arrive before the matching screen_update. Hold
+          // the exact result briefly; the following idle edge consumes it,
+          // while the timer is a bounded fallback if no screen edge arrives.
+          schedulePendingIdleLifecycleHook(ds, {
+            turnId: msg.turnId,
+            prevState: ds.lastScreenStatus,
+            content: msg.content,
+            source: 'final_output',
+          });
+        }
+        if (msg.suppressDelivery) {
+          ds.lastBridgeEmittedUuid = dedupeKey;
+          logger.info(
+            `[${t}] final_output retained for lifecycle; visible delivery already satisfied `
+            + `(turn ${msg.turnId.substring(0, 8)})`,
+          );
+          break;
         }
         // Worker pops the turn off its queue right after emit, so it will
         // NOT re-send this payload on its own. Daemon owns retry on

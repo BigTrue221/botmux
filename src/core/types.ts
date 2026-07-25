@@ -190,7 +190,7 @@ export interface DaemonSession {
     turnId?: string;
     prevState?: StreamStatus;
     content: string;
-    source: 'screen_update' | 'screenshot_uploaded';
+    source: 'screen_update' | 'screenshot_uploaded' | 'final_output';
   };
   /** Riff AIO Sandbox web terminal link. When set, buildTerminalUrl returns
    *  this URL directly (bypassing the local terminal proxy) so the dashboard
