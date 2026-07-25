@@ -1835,7 +1835,7 @@ ipcRoute('POST', '/api/sessions/:sessionId/report', async (req, res, params) => 
 
   // #region debug-point A:report-correlation-authority
   const debugTraceId = `report-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
-  void fetch('http://127.0.0.1:7777/event', {
+  void fetch('http://127.0.0.1:17777/event', {
     method: 'POST',
     body: JSON.stringify({
       sessionId: 'rrrrr-task-product-failures',
@@ -1941,7 +1941,7 @@ ipcRoute('POST', '/api/sessions/:sessionId/report', async (req, res, params) => 
     });
   }
   // #region debug-point A:report-relay-result
-  void fetch('http://127.0.0.1:7777/event', {
+  void fetch('http://127.0.0.1:17777/event', {
     method: 'POST',
     body: JSON.stringify({
       sessionId: 'rrrrr-task-product-failures',
