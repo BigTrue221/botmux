@@ -960,6 +960,15 @@ export interface BotConfig {
   vcMeetingAgent?: VcMeetingAgentConfig;
   workingDir?: string;
   workingDirs?: string[];
+  /**
+   * 普通对话访问档位：
+   *   - `allowlist` / 缺省：沿用 allowedUsers、群授权、oncall 等既有门禁；
+   *   - `all`：飞书/Lark 应用「可用范围」作为人员访问权威，botmux 收到带可验证
+   *     发送者身份的消息后不再做逐人 talk 拦截。
+   *
+   * 只影响 canTalk；canOperate 仍只认 resolved allowedUsers（operator/admin）。
+   */
+  allowedUsersMode?: 'allowlist' | 'all';
   allowedUsers?: string[];
   allowedChatGroups?: string[];
   /** Oncall bindings: chat_id → default workingDir. Any group member can talk; allowedUsers still gates card buttons / daemon commands. */
@@ -2002,6 +2011,9 @@ export function parseBotConfigsFromText(jsonText: string): BotConfig[] {
       vcMeetingAgent,
       workingDir: workingDirs?.[0] ?? entry.workingDir,
       workingDirs,
+      allowedUsersMode: entry.allowedUsersMode === 'all' || entry.allowedUsersMode === 'allowlist'
+        ? entry.allowedUsersMode
+        : undefined,
       allowedUsers: entry.allowedUsers,
       allowedChatGroups,
       oncallChats,

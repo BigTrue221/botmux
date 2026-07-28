@@ -41,6 +41,9 @@ export interface CreateGroupOpts {
   transferOwnerUnionId?: string;
   transferOwnerTo?: string;
   notifyOwnerOpenId?: string;
+  /** Suppress the outbound hook for an owner notification derived from a
+   *  private publisher identity. The Lark notification itself is unchanged. */
+  suppressOwnerNotifyHook?: boolean;
   /** Optional working directory to bind the newly created chat to oncall for
    *  every invited bot. The path is validated by callers; this service only
    *  persists the binding after chat.create succeeds. */
@@ -232,12 +235,23 @@ export async function createGroupWithBots(opts: CreateGroupOpts): Promise<Create
       notifyError = 'invitee_rejected';
     } else {
       try {
-        notifyMessageId = await sendMessage(
-          opts.creatorLarkAppId,
-          r.chatId,
-          `<at user_id="${notifyOwnerOpenId}"></at>`,
-          'text',
-        );
+        const notification = `<at user_id="${notifyOwnerOpenId}"></at>`;
+        notifyMessageId = opts.suppressOwnerNotifyHook
+          ? await sendMessage(
+              opts.creatorLarkAppId,
+              r.chatId,
+              notification,
+              'text',
+              undefined,
+              undefined,
+              { suppressHook: true },
+            )
+          : await sendMessage(
+              opts.creatorLarkAppId,
+              r.chatId,
+              notification,
+              'text',
+            );
       } catch (e: any) {
         notifyError = e?.message ?? String(e);
       }

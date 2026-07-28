@@ -54,12 +54,13 @@ describe('sandbox relay watcher host handoff', () => {
     const rawName = `${id}.content`;
     const preparedName = `${id}.card-content`;
     const reqName = `${id}.req.json`;
+    const publisherDigest = 'a'.repeat(64);
     writeFileSync(join(outbox, rawName), 'RAW');
     writeFileSync(join(outbox, preparedName), 'PREPARED');
     writeFileSync(join(outbox, reqName), JSON.stringify({
       contentFile: rawName,
       preparedContentFile: preparedName,
-      flags: ['--no-mention'],
+      flags: ['--mention-chat-member-digest', publisherDigest],
     }));
 
     const stop = startOutboxWatcher(outbox, {
@@ -104,6 +105,8 @@ describe('sandbox relay watcher host handoff', () => {
       expect(dirname(child.preparedPath)).toBe(join(root, 'relay-staging'));
       expect(child.argv).toContain(child.rawPath);
       expect(child.argv).not.toContain(child.preparedPath);
+      expect(child.argv).toContain('--mention-chat-member-digest');
+      expect(child.argv).toContain(publisherDigest);
       expect(child.preparedPath.startsWith(`${outbox}/`)).toBe(false);
 
       expect(existsSync(join(outbox, reqName))).toBe(false);

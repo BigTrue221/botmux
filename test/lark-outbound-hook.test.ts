@@ -65,4 +65,28 @@ describe('Lark outbound hook provider replay suppression', () => {
     expect(mocks.reply).toHaveBeenCalledOnce();
     expect(mocks.emitHookEvent).not.toHaveBeenCalled();
   });
+
+  it('keeps a private publisher mention in the provider request but omits its outbound hook', async () => {
+    const privateMention = '<at user_id="ou_private_publisher"></at>';
+
+    await sendMessage(
+      'app',
+      'oc_chat',
+      privateMention,
+      'text',
+      undefined,
+      { sessionId: 'sid' },
+      { suppressHook: true },
+    );
+
+    expect(mocks.create).toHaveBeenCalledWith({
+      params: { receive_id_type: 'chat_id' },
+      data: {
+        receive_id: 'oc_chat',
+        msg_type: 'text',
+        content: JSON.stringify({ text: privateMention }),
+      },
+    });
+    expect(mocks.emitHookEvent).not.toHaveBeenCalled();
+  });
 });

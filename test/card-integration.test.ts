@@ -734,6 +734,38 @@ describe('Card integration: full event flow', () => {
       expect(sm.resumeSession).not.toHaveBeenCalled();
     });
 
+    it('sensitive fallback should reject when allowedUsersMode=all has no operator', async () => {
+      // All 只应放行普通对话。无 effectiveAppId 的敏感卡片 fallback 也必须把它算作
+      // 已配置权限边界，不能 fall through 到 legacy open mode 提升为 canOperate。
+      const botRegMod = await import('../src/bot-registry.js');
+      vi.mocked(botRegMod.getAllBots).mockReturnValueOnce([{
+        config: {
+          larkAppId: APP_ID,
+          larkAppSecret: 'secret',
+          cliId: 'claude-code',
+          allowedUsersMode: 'all',
+        } as any,
+        resolvedAllowedUsers: [],
+        botOpenId: 'ou_bot',
+      } as any]);
+
+      const sessionId = 'closed-uuid-fallback-allowed-users-all';
+      const sessions = new Map<string, DaemonSession>();
+      const deps = makeDeps(sessions);
+
+      const sessionStoreMod = await import('../src/services/session-store.js');
+      vi.mocked(sessionStoreMod.getSession).mockReturnValue({
+        sessionId, chatId: 'oc_chat', rootMessageId: ROOT_ID,
+        title: 'closed', status: 'closed', createdAt: '2026-01-01T00:00:00.000Z',
+        scope: 'thread',
+      } as any);
+      const sm = await import('../src/core/session-manager.js');
+
+      await handleCardAction(makeResumeEvent(ROOT_ID, sessionId, 'ou_user'), deps, undefined);
+
+      expect(sm.resumeSession).not.toHaveBeenCalled();
+    });
+
     it('resume should reject when operator is not in allowedUsers', async () => {
       // canOperate is gated through bot-registry.getBot(...).resolvedAllowedUsers
       // — switch the mock to a bot with a non-empty allowlist that excludes the

@@ -67,6 +67,7 @@ export const CONFIG_FIELDS: readonly ConfigFieldSpec[] = [
   { key: 'defaultWorkingDir', configKey: 'defaultWorkingDir', kind: 'dir', effect: 'next-session', clearable: true, hint: '新话题默认工作目录（跳过仓库选择卡片）' },
   { key: 'brandLabel', configKey: 'brandLabel', kind: 'string', effect: 'immediate', clearable: true, hint: '卡片页脚品牌文案；unset 回默认 botmux 链接' },
   { key: 'autoStartPrompt', configKey: 'autoStartOnGroupJoinPrompt', kind: 'string', effect: 'immediate', clearable: true, hint: '被拉进新群主动开工的首轮 prompt（配合 autoStartOnGroupJoin）' },
+  { key: 'allowedUsersMode', configKey: 'allowedUsersMode', kind: 'enum', effect: 'immediate', clearable: true, enumValues: ['allowlist', 'all'], hint: '普通对话访问档位：allowlist=按名单/群授权门禁（默认），all=飞书应用可用范围内所有人可对话；管理权限仍仅限 allowedUsers' },
   { key: 'allowedUsers', configKey: 'allowedUsers', kind: 'allowedUsers', effect: 'immediate', clearable: false, hint: '管理员名单（邮箱/on_/ou_，逗号或空格分隔）；改后需加 确认' },
   { key: 'skills', configKey: 'skills', kind: 'json', effect: 'next-session', clearable: true, hint: 'bot 级 skill policy JSON；unset 回底层 CLI 默认行为' },
   { key: 'disableStreamingCard', configKey: 'disableStreamingCard', kind: 'boolean', effect: 'immediate', clearable: false, hint: '关闭实时流式卡片 on|off' },
@@ -367,6 +368,8 @@ export interface ConfigCardData {
   lang: string | null;
   /** 私聊单聊模式 p2pMode（'chat' | 'thread'）；null = 未设（默认 thread）。 */
   p2pMode: string | null;
+  /** 普通对话访问档位；缺省按 allowlist 展示。 */
+  allowedUsersMode: 'allowlist' | 'all';
   brandLabel: string | null;
   defaultWorkingDir: string | null;
   /** 入群主动开工首轮 prompt（autoStartOnGroupJoinPrompt）。 */
@@ -397,6 +400,7 @@ export function getConfigCardData(larkAppId: string, modelChoices: readonly stri
     modelChoices: [...modelChoices],
     lang: cfg.lang ?? null,
     p2pMode: cfg.p2pMode ?? null,
+    allowedUsersMode: cfg.allowedUsersMode === 'all' ? 'all' : 'allowlist',
     brandLabel: cfg.brandLabel ?? null,
     defaultWorkingDir: cfg.defaultWorkingDir ?? null,
     autoStartPrompt: cfg.autoStartOnGroupJoinPrompt ?? null,

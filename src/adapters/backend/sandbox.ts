@@ -1231,7 +1231,7 @@ export interface RelayRequest {
 // content/attachments come from validated outbox files, and session-id is
 // forced by the worker.
 const RELAY_FLAGS_NOVAL = new Set(['--mention-back', '--no-mention', '--no-quote', '--voice']);
-const RELAY_FLAGS_VAL = new Set(['--mention', '--quote']);
+const RELAY_FLAGS_VAL = new Set(['--mention', '--mention-chat-member-digest', '--quote']);
 
 export interface ValidatedRelay {
   contentName: string;
@@ -1303,6 +1303,9 @@ export function validateRelayRequest(req: RelayRequest): { ok: true; value: Vali
       // ['--mention','--session-id'] and have --session-id swallowed as the
       // value, corrupting the worker-forced session-id (self-DoS).
       if (v.startsWith('--')) return { ok: false, error: `flag ${f} value must not be a flag` };
+      if (f === '--mention-chat-member-digest' && !/^[0-9a-f]{64}$/.test(v)) {
+        return { ok: false, error: `flag ${f} requires a lowercase SHA-256 digest` };
+      }
       flags.push(f, v); i++; continue;
     }
     return { ok: false, error: `flag not allowed: ${f}` };

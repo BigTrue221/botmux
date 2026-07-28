@@ -151,6 +151,7 @@ export interface BotConfigEditInput {
    * 留空不动；输入 - 清空、回到弹卡模式。目录存在性由调用方在写盘前校验。
    */
   defaultWorkingDir?: string;
+  allowedUsersMode?: string;
   allowedUsers?: string;
   allowedChatGroups?: string;
   /**
@@ -409,6 +410,18 @@ export function applyBotConfigEdits<T extends Record<string, any>>(
 
   applyOptionalString(out, 'workingDir', input.workingDir);
   applyOptionalString(out, 'defaultWorkingDir', input.defaultWorkingDir);
+
+  if (input.allowedUsersMode !== undefined) {
+    const mode = input.allowedUsersMode.trim().toLowerCase();
+    if (!mode || mode === '-' || mode === 'allowlist') {
+      // allowlist 是默认档，清掉字段以保持 bots.json 干净。
+      delete out.allowedUsersMode;
+    } else if (mode === 'all') {
+      out.allowedUsersMode = 'all';
+    } else {
+      throw new Error(`allowedUsersMode 必须是 "allowlist" 或 "all": ${input.allowedUsersMode}`);
+    }
+  }
 
   if (input.allowedUsers !== undefined) {
     const allowedUsers = input.allowedUsers.trim();

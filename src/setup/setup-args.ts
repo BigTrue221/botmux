@@ -33,6 +33,8 @@ export interface SetupBotFlags {
   workingDir?: string;
   /** 固定默认目录：新话题直接在此目录启动、不弹仓库选择卡片；'-' 清空回弹卡模式。 */
   defaultWorkingDir?: string;
+  /** 普通对话访问档位：allowlist（默认）| all。 */
+  allowedUsersMode?: string;
   allowedUsers?: string;
   allowedChatGroups?: string;
   showInTeam?: string;
@@ -72,6 +74,7 @@ const BOT_FIELD_FLAGS: Record<string, keyof SetupBotFlags> = {
   '--backend': 'backend',
   '--working-dir': 'workingDir',
   '--default-working-dir': 'defaultWorkingDir',
+  '--allowed-users-mode': 'allowedUsersMode',
   '--allowed-users': 'allowedUsers',
   '--allowed-chat-groups': 'allowedChatGroups',
   '--show-in-team': 'showInTeam',
@@ -125,6 +128,8 @@ export const SETUP_CLI_USAGE = `botmux setup — 脚本化（非 TUI）用法
   --working-dir <dirs>       仓库选择卡片的扫描根目录（逗号分隔多个）
   --default-working-dir <d>  固定默认目录：新话题直接在此目录启动、不弹仓库
                              选择卡片；传 - 清空、回到弹卡模式
+  --allowed-users-mode <m>   普通对话访问档位：allowlist（默认）| all；
+                             all 只开放对话，管理权限仍由 --allowed-users 控制
   --allowed-users <a,b>      管理员名单（完整邮箱 / on_xxx / ou_xxx，逗号分隔）
   --allowed-chat-groups <g>  可对话群 chat_id（oc_xxx，逗号分隔）
   --show-in-team <bool>      平台团队页是否展示（默认 true）
@@ -310,6 +315,7 @@ export function buildBotFromAddFlags(flags: SetupBotFlags): Record<string, any> 
     // 扫描根回退默认 ~；其余情况与 TUI 一致，总是落 workingDir（留空 → '~'）。
     workingDir: flags.workingDir ?? (flags.defaultWorkingDir ? undefined : '~'),
     defaultWorkingDir: flags.defaultWorkingDir,
+    allowedUsersMode: flags.allowedUsersMode,
     allowedUsers: flags.allowedUsers,
     allowedChatGroups: flags.allowedChatGroups,
     showInTeam: flags.showInTeam,
@@ -350,6 +356,7 @@ export function editInputFromFlags(flags: SetupBotFlags): BotConfigEditInput {
   if (flags.backend !== undefined) input.backendType = flags.backend;
   if (flags.workingDir !== undefined) input.workingDir = flags.workingDir;
   if (flags.defaultWorkingDir !== undefined) input.defaultWorkingDir = flags.defaultWorkingDir;
+  if (flags.allowedUsersMode !== undefined) input.allowedUsersMode = flags.allowedUsersMode;
   if (flags.allowedUsers !== undefined) input.allowedUsers = flags.allowedUsers;
   if (flags.allowedChatGroups !== undefined) input.allowedChatGroups = flags.allowedChatGroups;
   if (flags.showInTeam !== undefined) input.showInTeam = flags.showInTeam;

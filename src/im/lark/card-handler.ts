@@ -1452,6 +1452,9 @@ export async function handleCardAction(data: CardActionData, deps: CardHandlerDe
       // 也算限制态，否则这条手写 fallback 会算成 false → 敏感动作 fall through 成全开放。
       // 注意只进 hasAllowlist 判定，命中仍只认 allowedUsers（与 canOperate 一致，不授 operate）。
       const hasAllowlist = allowedUsers.length > 0
+        // allowedUsersMode=all 只开放 talk，也必须计入限制态；否则无 effectiveAppId
+        // 的敏感动作会落入 legacy open mode，把所有对话者提升为 operator。
+        || bots.some(b => b.config.allowedUsersMode === 'all')
         || bots.some(b => (b.config.allowedChatGroups?.length ?? 0) > 0)
         || bots.some(b => (b.config.globalGrants?.length ?? 0) > 0)
         // p2pOpen 同理（与 evaluateTalk 的 hasConfiguredAllowlist 保持一致）：它是一次显式的

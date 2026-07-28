@@ -180,9 +180,10 @@ const listBotsApiFailures = new Map<string, { reason: string; expiresAt: number 
  * the param and get exactly the pre-Step-6 behavior.
  */
 export interface OutboundMessageOptions {
-  /** The provider request is reconciling an already-attempted stable UUID.
-   * Lark deduplicates the message, but the local outbound hook is a separate
-   * side effect and must not be fired twice. */
+  /** Do not emit the local outbound hook. Used when reconciling an
+   * already-attempted provider UUID or when the provider content contains a
+   * private identity that must reach Lark but must not enter hook payloads.
+   * The Lark provider request itself is unchanged. */
   suppressHook?: boolean;
 }
 
@@ -559,6 +560,89 @@ export async function listChatMemberOpenIds(larkAppId: string, chatId: string): 
     pageToken = res.data.page_token;
   }
   return openIds;
+}
+
+const LARK_OPEN_ID_RE = /^ou_[A-Za-z0-9]+$/;
+const PUBLISHER_OPEN_ID_DIGEST_DOMAIN = 'lark-open-v1\0';
+
+/** Stable, domain-separated digest used to carry a task publisher between
+ * machine steps without persisting or printing the app-scoped open_id. */
+export function digestLarkOpenId(openId: string): string {
+  return createHash('sha256')
+    .update(Buffer.concat([
+      Buffer.from(PUBLISHER_OPEN_ID_DIGEST_DOMAIN, 'utf8'),
+      Buffer.from(openId, 'utf8'),
+    ]))
+    .digest('hex');
+}
+
+/**
+ * Select exactly one current chat member by its domain-separated digest.
+ * Duplicate member rows deliberately fail closed rather than silently choosing
+ * the first occurrence.
+ */
+export function selectChatMemberOpenIdByDigest(
+  openIds: readonly string[],
+  memberDigest: string,
+): string | null {
+  if (!/^[0-9a-f]{64}$/.test(memberDigest)) return null;
+  const matches = openIds.filter(openId => (
+    LARK_OPEN_ID_RE.test(openId)
+    && digestLarkOpenId(openId) === memberDigest
+  ));
+  return matches.length === 1 ? matches[0] : null;
+}
+
+/** Resolve a digest only against the live members of the exact target chat,
+ * observed through the current session App. API errors propagate so callers
+ * can fail before sending. */
+export async function resolveChatMemberOpenIdByDigest(
+  larkAppId: string,
+  chatId: string,
+  memberDigest: string,
+): Promise<string | null> {
+  const openIds = await listChatMemberOpenIds(larkAppId, chatId);
+  return selectChatMemberOpenIdByDigest(openIds, memberDigest);
+}
+
+/**
+ * Resolve one canonical email to exactly one open_id in this App's scope.
+ * This helper is intentionally independent from allowedUsers resolution and
+ * emits no log line containing either external identity.
+ */
+export async function resolveCanonicalEmailOpenId(
+  larkAppId: string,
+  email: string,
+): Promise<string | null> {
+  if (
+    !email
+    || email !== email.trim()
+    || email !== email.toLowerCase()
+    || Buffer.byteLength(email, 'utf8') > 254
+    || !/^[\x21-\x7e]+$/.test(email)
+    || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+  ) {
+    throw new Error('canonical_owner_email_required');
+  }
+
+  const c = getBotClient(larkAppId);
+  const res = await (c as any).contact.v3.user.batchGetId({
+    params: { user_id_type: 'open_id' },
+    data: { emails: [email], include_resigned: false },
+  });
+  if (res?.code !== 0) {
+    throw new Error(`owner_email_lookup_failed:${String(res?.code ?? 'unknown')}`);
+  }
+
+  const matches = (Array.isArray(res?.data?.user_list) ? res.data.user_list : [])
+    .filter((item: any) => (
+      typeof item?.email === 'string'
+      && item.email.toLowerCase() === email
+      && typeof item?.user_id === 'string'
+      && LARK_OPEN_ID_RE.test(item.user_id)
+    ))
+    .map((item: any) => item.user_id as string);
+  return matches.length === 1 ? matches[0] : null;
 }
 
 /**

@@ -504,7 +504,7 @@ describe('codex-app sandboxExtraExecPaths', () => {
   });
 });
 
-// ── validateRelayRequest: pure schema + flag-allowlist boundary (UNCHANGED) ──
+// ── validateRelayRequest: pure schema + flag-allowlist boundary ──
 // Regression for the "sandbox makes host read an arbitrary path" confused-deputy
 // blocker: only plain outbox basenames + allowlisted flags pass; raw argv /
 // path flags / sandbox-chosen session-id are rejected.
@@ -557,6 +557,21 @@ describe('validateRelayRequest', () => {
     expect(r.value.contentName).toBe('c.content');
     expect(r.value.cardName).toBe('card.json');
     expect(r.value.flags).toEqual(['--no-mention']);
+  });
+
+  it('allows only a lowercase SHA-256 chat-member digest through the sandbox relay', () => {
+    const digest = 'a'.repeat(64);
+    expect(validateRelayRequest({
+      contentFile: 'c.content',
+      flags: ['--mention-chat-member-digest', digest],
+    })).toMatchObject({
+      ok: true,
+      value: { flags: ['--mention-chat-member-digest', digest] },
+    });
+    expect(validateRelayRequest({
+      contentFile: 'c.content',
+      flags: ['--mention-chat-member-digest', 'not-a-digest'],
+    })).toMatchObject({ ok: false });
   });
 
   it('validates and preserves a frozen relay origin', () => {

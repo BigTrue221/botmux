@@ -81,6 +81,11 @@ import { scrubSessionCliHomeEnv } from './utils/child-env.js';
 import { scheduleTimeZone } from './utils/timezone.js';
 import { expandHomePath, invalidWorkingDirs } from './utils/working-dir.js';
 import { firstPositional } from './cli/arg-utils.js';
+import {
+  readPrivateCanonicalEmailFile,
+  validateCreateGroupPublisherSelector,
+  validateSendPublisherMentionSelector,
+} from './cli/publisher-identity.js';
 import { isColdResumeDormant, sessionListDisposition } from './cli/session-list-liveness.js';
 import { dispatchPrimaryMessage, findStdinAliasAttachment, normalizeInteractiveCardInput, sendFileAttachments, sendVideoAttachments, shouldSendAsPureVideo, validateVideoAttachments } from './cli/send-dispatch.js';
 import { dispatchDeferredTopicSend, type DeferredScheduleRunData } from './cli/deferred-topic-send.js';
@@ -4756,6 +4761,8 @@ botmux v${getVersion()} — IM ↔ AI 编程 CLI 桥接
        --card-json <json>              直接发送飞书/Lark interactive 卡片 JSON 字符串
        --mention <open_id:name>        @提及（可重复）
        --mention-owner-digest <sha256> 从当前 Bot allowlist 精确解析并 @ 受控任务发布人
+       --mention-chat-member-digest <sha256>
+                                       从目标群实时成员中精确解析并 @ 任务发布人（不依赖 allowedUsers）
        --mention-back                  @回本轮触发消息的发送者（open_id 自动取自会话）
        --no-mention                    明确声明本条不@任何人
        --quote <message_id>            指定引用某条消息（普通群，默认引用本轮触发消息）
@@ -5802,7 +5809,7 @@ async function relaySend(
   // routing (--chat-id/--into/--top-level) and --session-id flags are dropped —
   // content/attachments come from the outbox and session-id is forced host-side.
   const FLAGS_NOVAL = new Set(['--mention-back', '--no-mention', '--no-quote', '--voice']);
-  const FLAGS_VAL = new Set(['--mention', '--quote']);
+  const FLAGS_VAL = new Set(['--mention', '--mention-chat-member-digest', '--quote']);
   const flags: string[] = [];
   for (let i = 0; i < rest.length; i++) {
     const tok = rest[i];
@@ -6166,11 +6173,35 @@ async function cmdSend(rest: string[]): Promise<void> {
   }
   const mentionArgs = argValues(rest, '--mention');  // "open_id:Display Name"
   const ownerSubjectDigest = argValue(rest, '--mention-owner-digest');
+  const chatMemberDigest = argValue(rest, '--mention-chat-member-digest');
+  const mentionBack = rest.includes('--mention-back');
+  const noMention = rest.includes('--no-mention');
+  // Parse the private publisher path's side-effecting/rerouting modes before
+  // selector validation. A chat-member digest is proved against one exact chat,
+  // while voice cannot carry an @ and arbitrary message roots may belong to a
+  // different chat. Reject those combinations before TTS, upload, or send.
+  const sendInto = argValue(rest, '--into');
+  const asVoice = rest.includes('--voice');
+  const explicitQuote = argValue(rest, '--quote');
   if (
     flagPresentButValueMissing(rest, '--mention-owner-digest')
-    || (ownerSubjectDigest !== undefined && !/^[0-9a-f]{64}$/.test(ownerSubjectDigest))
+    || flagPresentButValueMissing(rest, '--mention-chat-member-digest')
   ) {
-    console.error('botmux send: --mention-owner-digest 必须是 64 位小写十六进制 SHA-256');
+    console.error('botmux send: publisher digest 参数缺少值');
+    process.exit(2);
+  }
+  const publisherMention = validateSendPublisherMentionSelector({
+    ownerSubjectDigest,
+    chatMemberDigest,
+    explicitMentionCount: mentionArgs.length,
+    mentionBack,
+    noMention,
+    voice: asVoice,
+    into: sendInto !== undefined,
+    explicitQuote: explicitQuote !== undefined,
+  });
+  if (!publisherMention.ok) {
+    console.error(`botmux send: ${publisherMention.error}`);
     process.exit(2);
   }
   const contentFile = argValue(rest, '--content-file');
@@ -6189,14 +6220,11 @@ async function cmdSend(rest: string[]): Promise<void> {
   // --into <话题根id>: reply this send into a specific topic (a sub-bot's topic,
   // another thread, etc.) instead of the session's own location. Wins over the
   // auto/scope default; `dispatch` opens topics, `send --into` posts into them.
-  const sendInto = argValue(rest, '--into');
   // --voice: synthesize the content into a Feishu voice bubble instead of a
   // text/card message. The content should be spoken-style prose (the 🔊 button
   // injects a condense-first instruction before the model calls this).
-  const asVoice = rest.includes('--voice');
   // Quote chain (chat scope): --quote <message_id> overrides the auto target,
   // --no-quote forces a plain (un-quoted) send.
-  const explicitQuote = argValue(rest, '--quote');
   const managedQuoteError = managedVcQuoteError({
     managed: !!vcMeetingManagedSendOrigin,
     durableDelivery: !!vcMeetingDeliveryReplyOrigin,
@@ -6209,12 +6237,6 @@ async function cmdSend(rest: string[]): Promise<void> {
   }
   const noQuote = rest.includes('--no-quote');
   // @ hard-gate: every reply must explicitly choose one of these.
-  const mentionBack = rest.includes('--mention-back');
-  const noMention = rest.includes('--no-mention');
-  if (ownerSubjectDigest && (mentionArgs.length > 0 || mentionBack || noMention)) {
-    console.error('botmux send: --mention-owner-digest 不能与其他 mention 模式混用');
-    process.exit(2);
-  }
   // --attention[=kind]: raise a hand — post this message AND light the dashboard
   // needs-you column for this session. Parsed specially (not argValue) so a bare
   // `--attention "我卡住了"` doesn't eat the message as the flag value.
@@ -6225,7 +6247,7 @@ async function cmdSend(rest: string[]): Promise<void> {
     overrideChatId,
     sendInto,
     attentionRequested: attention.requested,
-    explicitMentionCount: mentionArgs.length,
+    explicitMentionCount: mentionArgs.length + (publisherMention.kind === 'none' ? 0 : 1),
     mentionBack,
     noMention,
   });
@@ -6505,6 +6527,10 @@ async function cmdSend(rest: string[]): Promise<void> {
   // 天然不会误投。per-turn map 设计：并发评论之间互不覆盖，不会串线。
   const docTarget = currentTurnId ? s.docCommentTargets?.[currentTurnId] : undefined;
   if (docTarget && !sendTopLevel && !overrideChatId && !sendInto) {
+    if (publisherMention.kind === 'chat_member_digest') {
+      console.error('botmux send: --mention-chat-member-digest 仅支持飞书群消息，不能用于文档评论。');
+      process.exit(2);
+    }
     if (customCardRequested) {
       console.error('botmux send: 文档评论回复不支持 --card-file/--card-json；请改用普通文本，或显式 --top-level/--chat-id 发到飞书群');
       process.exit(2);
@@ -6578,7 +6604,7 @@ async function cmdSend(rest: string[]): Promise<void> {
   const mentionGate = validateMentionDecision({
     enabled: config.send.requireMentionDecision,
     sendTopLevel,
-    hasMentionArgs: mentionArgs.length > 0 || !!ownerSubjectDigest,
+    hasMentionArgs: mentionArgs.length > 0 || publisherMention.kind !== 'none',
     mentionBack,
     noMention,
     hasQuoteTargetSender: !!replyTargetSenderOpenId,
@@ -6607,23 +6633,45 @@ async function cmdSend(rest: string[]): Promise<void> {
   if (envPinnedRiffBot) { try { registerBot(envPinnedRiffBot); } catch { /* */ } }
 
   const { sendMessage, replyMessage, uploadImage, uploadFile, MessageWithdrawnError } = await import('./im/lark/client.js');
-  const { resolveAllowedUnionSubjectOpenId } = await import('./im/lark/client.js');
+  const {
+    resolveAllowedUnionSubjectOpenId,
+    resolveChatMemberOpenIdByDigest,
+  } = await import('./im/lark/client.js');
   const appId = s.larkAppId!;
-  if (ownerSubjectDigest) {
+  // Effective target chat for top-level mode (defaults to session's chat).
+  // Publisher member digests are resolved only against this exact chat and
+  // through this exact session App.
+  const targetChatId = overrideChatId ?? s.chatId;
+  if (publisherMention.kind === 'allowed_subject_digest') {
     const ownerConfig = loadBotConfigs().find((candidate) => candidate.larkAppId === appId);
     const ownerOpenId = await resolveAllowedUnionSubjectOpenId(
       appId,
       ownerConfig?.allowedUsers ?? [],
-      ownerSubjectDigest,
+      publisherMention.digest,
     );
     if (!ownerOpenId) {
       console.error('botmux send: 当前 Bot allowlist 无法唯一解析任务发布人');
       process.exit(2);
     }
     mentions.push({ open_id: ownerOpenId, name: '' });
+  } else if (publisherMention.kind === 'chat_member_digest') {
+    let ownerOpenId: string | null = null;
+    try {
+      ownerOpenId = await resolveChatMemberOpenIdByDigest(
+        appId,
+        targetChatId,
+        publisherMention.digest,
+      );
+    } catch {
+      console.error('botmux send: 无法实时读取目标群成员，任务发布人核验失败');
+      process.exit(2);
+    }
+    if (!ownerOpenId) {
+      console.error('botmux send: 目标群无法唯一匹配任务发布人');
+      process.exit(2);
+    }
+    mentions.push({ open_id: ownerOpenId, name: '' });
   }
-  // Effective target chat for top-level mode (defaults to session's chat)
-  const targetChatId = overrideChatId ?? s.chatId;
   // Chat-scope sessions (普通群整群一会话) post to chatId without
   // reply_in_thread, otherwise Lark would force every reply into a fresh
   // topic — defeating the whole point of chat-scope routing.
@@ -6664,7 +6712,10 @@ async function cmdSend(rest: string[]): Promise<void> {
   for (const m of mentions) {
     const seed = offTopicSubBotSeed(m.open_id);
     if (seed) {
-      console.error(`ℹ️ ${m.open_id}${m.name ? `（${m.name}）` : ''} 在子话题 ${seed} 里也有会话；本条发到当前位置（新对话）。要发进那个话题改用 --into ${seed}。`);
+      const mentionLabel = publisherMention.kind === 'chat_member_digest'
+        ? '任务发布人'
+        : `${m.open_id}${m.name ? `（${m.name}）` : ''}`;
+      console.error(`ℹ️ ${mentionLabel} 在子话题 ${seed} 里也有会话；本条发到当前位置（新对话）。要发进那个话题改用 --into ${seed}。`);
     }
   }
 
@@ -6682,6 +6733,10 @@ async function cmdSend(rest: string[]): Promise<void> {
     rootMessageId: s.rootMessageId,
     title: s.title,
   };
+  // The live open_id resolved for this private selector must reach Lark so the
+  // actual mention works, but it must not be copied into user-configured hook
+  // payloads. Legacy allowlist and ordinary mention paths keep their hooks.
+  const suppressPrivatePublisherHook = publisherMention.kind === 'chat_member_digest';
   // Dispatch helper: top-level / chat-scope send vs reply-in-thread, single
   // decision point. Used for file attachments (always plain in chat scope).
   const sendTarget = resolveSendTarget({ into: sendInto, topLevel: sendTopLevel, chatScope: isChatScope, chatId: targetChatId, rootMessageId: s.rootMessageId, replyTargetRootId: turnReplyTarget?.rootMessageId, replyTargetTurnId: turnReplyTarget?.turnId, replyTargetQuoteOnly: turnReplyTarget?.quoteOnly, currentTurnId });
@@ -6694,6 +6749,7 @@ async function cmdSend(rest: string[]): Promise<void> {
     // This closure also carries attachments, so every Lark call re-checks the
     // exact durable attempt/member instead of inheriting the early cmd gate.
     revalidateVcMeetingManagedSend();
+    const suppressOutboundHook = suppressHook || suppressPrivatePublisherHook;
     if (!sendInto && (!overrideChatId || overrideChatId === s.chatId)) {
       const deferred = await dispatchDeferredTopicSend({
         dataDir: resolveDataDir(),
@@ -6711,7 +6767,7 @@ async function cmdSend(rest: string[]): Promise<void> {
           type,
           rootUuid,
           hookContext,
-          suppressHook ? { suppressHook: true } : undefined,
+          suppressOutboundHook ? { suppressHook: true } : undefined,
         ),
         // The optional title is the root seed and the actual alert follows as
         // its first reply. Do not emit a user outbound hook for presentation-
@@ -6725,7 +6781,7 @@ async function cmdSend(rest: string[]): Promise<void> {
           true,
           replyUuid,
           hookContext,
-          suppressHook ? { suppressHook: true } : undefined,
+          suppressOutboundHook ? { suppressHook: true } : undefined,
         ),
       });
       if (deferred.handled && deferred.messageId) {
@@ -6742,7 +6798,7 @@ async function cmdSend(rest: string[]): Promise<void> {
           msgType,
           uuid,
           hookContext,
-          suppressHook ? { suppressHook: true } : undefined,
+          suppressOutboundHook ? { suppressHook: true } : undefined,
         )
       : replyMessage(
           appId,
@@ -6752,7 +6808,7 @@ async function cmdSend(rest: string[]): Promise<void> {
           sendTarget.mode === 'thread',
           uuid,
           hookContext,
-          suppressHook ? { suppressHook: true } : undefined,
+          suppressOutboundHook ? { suppressHook: true } : undefined,
         );
   };
   const recordBridgeSendMarker = (sentAtMs: number, messageId: string, sentContent: string): void => {
@@ -6827,8 +6883,9 @@ async function cmdSend(rest: string[]): Promise<void> {
         msgType: canonicalOutput.msgType,
         ...(prepared ? { uuid: prepared.providerKey } : {}),
         // Managed meeting output must never fan out through user-configured
-        // outbound hooks, including its first provider attempt.
-        ...(prepared ? { suppressHook: true } : {}),
+        // outbound hooks, including its first provider attempt. A private
+        // publisher selector has the same no-hook requirement.
+        ...((prepared || suppressPrivatePublisherHook) ? { suppressHook: true } : {}),
         hookContext,
         MessageWithdrawnError,
         // Explicit VC IM --into is rejected above, so an unquoted first send
@@ -7228,7 +7285,9 @@ async function cmdSend(rest: string[]): Promise<void> {
     // Lark 在消息里渲染真正的 @at 元素，从而触发对方 bot 的 WS 事件投递。
 
     const atSummary = mentions.length > 0
-      ? `@${mentions.map(m => m.name || m.open_id).join(',')}`
+      ? publisherMention.kind === 'chat_member_digest'
+        ? '@任务发布人'
+        : `@${mentions.map(m => m.name || m.open_id).join(',')}`
       : '未@任何人';
     console.error(`✓ 已发送 ${messageId} ｜ ${primaryQuotedId ? `引用 ${primaryQuotedId}` : '未引用'} ｜ ${atSummary}`);
 
@@ -7281,7 +7340,9 @@ async function cmdSend(rest: string[]): Promise<void> {
       messageId,
       sessionId: sid,
       quotedMessageId: primaryQuotedId,
-      mentioned: mentions.map(m => ({ open_id: m.open_id, name: m.name })),
+      mentioned: publisherMention.kind === 'chat_member_digest'
+        ? [{ memberDigest: publisherMention.digest }]
+        : mentions.map(m => ({ open_id: m.open_id, name: m.name })),
       ...(deferredTopicRootMessageIdForOutput
         ? { deferredTopicRootMessageId: deferredTopicRootMessageIdForOutput, turnId: currentTurnId }
         : {}),
@@ -7294,7 +7355,9 @@ async function cmdSend(rest: string[]): Promise<void> {
         : {}),
     }));
   } catch (err: any) {
-    console.error(`发送失败: ${err.message}`);
+    console.error(publisherMention.kind === 'chat_member_digest'
+      ? '发送失败: 飞书发送未完成（任务发布人身份已隐藏）'
+      : `发送失败: ${err.message}`);
     process.exit(1);
   }
 }
@@ -7910,6 +7973,7 @@ botmux create-group — 用一组机器人新建飞书群
   botmux create-group --bot <name|larkAppId> [--bot ...] [--name "群名"]
                       [--working-dir <path>]
                       [--owner-subject-digest <sha256>]
+                      [--owner-email-file <0600-file>]
                       [--kickoff-bot <open_id> --kickoff-prompt "文本"]
                       [--json-status]
 
@@ -7925,6 +7989,10 @@ botmux create-group — 用一组机器人新建飞书群
   --owner-subject-digest <sha256>
                  可选；只从 creator 的 union_id allowlist 中精确选择该摘要对应的发布人，
                  用于受控 Web 任务建群。零个或多个匹配都会在建群前拒绝。
+  --owner-email-file <0600-file>
+                 可选；与 --owner-subject-digest 互斥。严格读取一个 lower-case canonical email，
+                 文件必须是当前 uid 的普通文件且权限严格为 0600。使用 creator App
+                 实时解析发布人，不读取或修改 allowedUsers；解析失败会在建群前拒绝。
   --kickoff-bot <open_id>  可选；建群成功后由 creator @ 该 bot 并发送 --kickoff-prompt，
                  触发该 bot 自动开始工作（如 PR review）。需配合 --kickoff-prompt 使用。
                  该 bot 必须已在 --bot 列表中（即已是群成员）。
@@ -7934,8 +8002,8 @@ botmux create-group — 用一组机器人新建飞书群
 
 行为:
   - 第一个解析到的 bot 作为 creator（决定建群身份 + 初始群主 + open_id app scope）。
-  - 邀请用户 / 转让群主 / @通知 对象都从 creator 的 resolvedAllowedUsers 取首个 open_id（email 自动转换；
-    转不出来或为空则跳过对应步骤，stderr warning）。
+  - 指定 --owner-email-file/--owner-subject-digest 时，邀请用户 / 转让群主 / @通知都使用精确发布人；
+    未指定时才从 creator 的 resolvedAllowedUsers 取首个 open_id（email 自动转换）。
   - 不依赖 botmux 会话，任何环境都能跑。
   - --working-dir 会先校验路径存在且是目录；绑定失败不会重复建群，会在 stderr 给出逐 bot 结果。
   - --kickoff-bot/--kickoff-prompt：creator 建群后 @ 指定 bot 并发 prompt；该 bot 收到 @ 会自动起会话。
@@ -7957,14 +8025,23 @@ botmux create-group — 用一组机器人新建飞书群
   const name = argValue(rest, '--name');
   const workingDirArg = argValue(rest, '--working-dir', '--cwd', '--dir');
   const ownerSubjectDigest = argValue(rest, '--owner-subject-digest');
+  const ownerEmailFile = argValue(rest, '--owner-email-file');
   const kickoffBot = argValue(rest, '--kickoff-bot');
   const kickoffPrompt = argValue(rest, '--kickoff-prompt');
   const jsonStatus = rest.includes('--json-status');
   if (
     flagPresentButValueMissing(rest, '--owner-subject-digest')
-    || (ownerSubjectDigest !== undefined && !/^[0-9a-f]{64}$/.test(ownerSubjectDigest))
+    || flagPresentButValueMissing(rest, '--owner-email-file')
   ) {
-    console.error('--owner-subject-digest 必须是 64 位小写十六进制 SHA-256。');
+    console.error('publisher identity 参数缺少值。');
+    process.exit(1);
+  }
+  const publisherSelector = validateCreateGroupPublisherSelector({
+    ownerSubjectDigest,
+    ownerEmailFile,
+  });
+  if (!publisherSelector.ok) {
+    console.error(publisherSelector.error);
     process.exit(1);
   }
 
@@ -8013,6 +8090,7 @@ botmux create-group — 用一组机器人新建飞书群
     resolveKickoff,
     createGroupCompletionStatus,
     shouldWriteCreateGroupCompletionStatus,
+    verifyCreateGroupPublisherMembership,
   } = await import('./cli/create-group-resolver.js');
   const resolved = resolveBotRefs(
     botRefs,
@@ -8057,36 +8135,56 @@ botmux create-group — 用一组机器人新建飞书群
     process.exit(1);
   }
 
-  // Derive user_open_id from creator's allowedUsers (creator app scope only).
-  // resolveAllowedUsers converts emails → open_ids via creator's Lark client.
+  // Derive the publisher in the creator App scope. The private email-file path
+  // is intentionally independent from allowedUsers and fails before chat.create
+  // on any file/API/ambiguity error.
   const creatorCfg = fullConfigs.find(c => c.larkAppId === creatorLarkAppId);
   const allowedRaw = creatorCfg?.allowedUsers ?? [];
   const {
+    digestLarkOpenId,
+    resolveCanonicalEmailOpenId,
+    resolveChatMemberOpenIdByDigest,
     resolveAllowedUnionSubjectOpenId,
     resolveAllowedUsers,
   } = await import('./im/lark/client.js');
-  let creatorAllowedOpenIds: string[] = [];
-  try {
-    creatorAllowedOpenIds = ownerSubjectDigest
-      ? [
-          await resolveAllowedUnionSubjectOpenId(
-            creatorLarkAppId,
-            allowedRaw,
-            ownerSubjectDigest,
-          ),
-        ].filter((value): value is string => !!value)
-      : await resolveAllowedUsers(creatorLarkAppId, allowedRaw);
-  } catch (err: any) {
-    console.error(`⚠️  解析 creator allowedUsers 失败: ${err?.message ?? err}（继续创建空群）`);
+  let targetOpenId: string | undefined;
+  if (publisherSelector.kind === 'email_file') {
+    try {
+      const canonicalEmail = readPrivateCanonicalEmailFile(publisherSelector.emailFile);
+      targetOpenId = await resolveCanonicalEmailOpenId(creatorLarkAppId, canonicalEmail) ?? undefined;
+    } catch {
+      console.error('任务发布人邮箱文件或 creator App 身份解析失败；建群已停止。');
+      process.exit(1);
+    }
+    if (!targetOpenId) {
+      console.error('任务发布人无法唯一解析为 creator App 的群成员身份；建群已停止。');
+      process.exit(1);
+    }
+  } else if (publisherSelector.kind === 'subject_digest') {
+    try {
+      targetOpenId = await resolveAllowedUnionSubjectOpenId(
+        creatorLarkAppId,
+        allowedRaw,
+        publisherSelector.subjectDigest,
+      ) ?? undefined;
+    } catch {
+      targetOpenId = undefined;
+    }
+  } else {
+    try {
+      targetOpenId = (await resolveAllowedUsers(creatorLarkAppId, allowedRaw))[0];
+    } catch (err: any) {
+      console.error(`⚠️  解析 creator allowedUsers 失败: ${err?.message ?? err}（继续创建空群）`);
+    }
   }
-  const targetOpenId = creatorAllowedOpenIds[0];
-  if (ownerSubjectDigest && !targetOpenId) {
+  if (publisherSelector.kind === 'subject_digest' && !targetOpenId) {
     console.error('任务发布人无法解析为 creator App 的 open_id；建群已停止。');
     process.exit(1);
   }
   if (!targetOpenId) {
     console.error('⚠️  creator bot 的 allowedUsers 没有可用 open_id — 将创建仅含 bot 的群（跳过邀请/转让/@通知）。');
   }
+  const ownerMemberDigest = targetOpenId ? digestLarkOpenId(targetOpenId) : null;
 
   const { createGroupWithBots } = await import('./services/group-creator.js');
   let result;
@@ -8099,6 +8197,7 @@ botmux create-group — 用一组机器人新建飞书群
       userOpenIds: targetOpenId ? [targetOpenId] : [],
       transferOwnerTo: targetOpenId,
       notifyOwnerOpenId: targetOpenId,
+      suppressOwnerNotifyHook: publisherSelector.kind === 'email_file',
       bindWorkingDir,
       kickoffBotLarkAppId: kickoff.targetLarkAppId,
       kickoffPrompt: kickoff.prompt,
@@ -8120,19 +8219,26 @@ botmux create-group — 用一组机器人新建飞书群
     });
   } catch (err: any) {
     if (createdChatId) {
-      console.error(`⚠️  群 ${createdChatId} 已创建，但后续初始化失败: ${err?.message ?? err}；请勿重建，先检查并复用该群。`);
+      console.error(publisherSelector.kind === 'email_file'
+        ? `⚠️  群 ${createdChatId} 已创建，但后续初始化失败（发布人身份已隐藏）；请勿重建，先检查并复用该群。`
+        : `⚠️  群 ${createdChatId} 已创建，但后续初始化失败: ${err?.message ?? err}；请勿重建，先检查并复用该群。`);
       if (jsonStatus) {
         writeFileSync(1, `${JSON.stringify({
           success: false,
           chatCreated: true,
           chatId: createdChatId,
+          ownerMemberDigest,
           collaborationReady: false,
           kickoffAccepted: false,
-          error: err?.message ?? String(err),
+          error: publisherSelector.kind === 'email_file'
+            ? 'group_initialization_failed'
+            : err?.message ?? String(err),
         })}\n`);
       }
     } else {
-      console.error(`建群失败: ${err?.message ?? err}`);
+      console.error(publisherSelector.kind === 'email_file'
+        ? '建群失败（任务发布人身份已隐藏）'
+        : `建群失败: ${err?.message ?? err}`);
     }
     process.exit(1);
   }
@@ -8140,9 +8246,27 @@ botmux create-group — 用一组机器人新建飞书群
   const invalidBots = new Set(result.invalidBotIds);
   const joinedBotAppIds = [...new Set(resolved.larkAppIds)].filter(appId => !invalidBots.has(appId));
   // createGroupWithBots runs the exact grant preflight after invitations and
-  // before any role/kickoff message. Returning here therefore proves the cold
-  // group's collaboration boundary completed (or there was only one bot).
-  const collaborationReady = true;
+  // before any role/kickoff message. The private publisher path additionally
+  // re-proves the exact publisher against the creator App's live view of this
+  // exact chat. Any lookup error, missing/ambiguous member, mismatch, or
+  // rejected invitation preserves the created chat but blocks dispatch.
+  let collaborationReady = true;
+  if (publisherSelector.kind === 'email_file') {
+    collaborationReady = !!targetOpenId
+      && !!ownerMemberDigest
+      && await verifyCreateGroupPublisherMembership({
+        targetOpenId,
+        invalidUserIds: result.invalidUserIds,
+        resolveLiveOpenId: () => resolveChatMemberOpenIdByDigest(
+          creatorLarkAppId,
+          result.chatId,
+          ownerMemberDigest,
+        ),
+      });
+    if (!collaborationReady) {
+      console.error('⚠️  群已创建，但任务发布人实时成员核验失败；请勿重建，当前任务不得进入派发。');
+    }
+  }
   const kickoffRequested = !!kickoff.targetLarkAppId && !!kickoff.prompt;
 
   // Human-readable summary + warnings → stderr.
@@ -8155,15 +8279,23 @@ botmux create-group — 用一组机器人新建飞书群
     console.error(`⚠️  飞书拒绝邀请的 bot: ${result.invalidBotIds.join(', ')}`);
   }
   if (result.invalidUserIds.length > 0) {
-    console.error(`⚠️  飞书拒绝邀请的 user: ${result.invalidUserIds.join(', ')}`);
+    console.error(publisherSelector.kind === 'email_file'
+      ? `⚠️  飞书拒绝邀请任务发布人（${result.invalidUserIds.length} 个）`
+      : `⚠️  飞书拒绝邀请的 user: ${result.invalidUserIds.join(', ')}`);
   }
   if (result.transferError) {
-    console.error(`⚠️  群主转让失败 (${result.transferError}) — 当前群主仍为 creator bot`);
+    console.error(publisherSelector.kind === 'email_file'
+      ? '⚠️  群主转让给任务发布人失败 — 当前群主仍为 creator bot'
+      : `⚠️  群主转让失败 (${result.transferError}) — 当前群主仍为 creator bot`);
   } else if (result.ownerTransferredTo) {
-    console.error(`✅ 群主已转让给 ${result.ownerTransferredTo}`);
+    console.error(publisherSelector.kind === 'email_file'
+      ? '✅ 群主已转让给任务发布人'
+      : `✅ 群主已转让给 ${result.ownerTransferredTo}`);
   }
   if (result.notifyError) {
-    console.error(`⚠️  @通知发送失败: ${result.notifyError}`);
+    console.error(publisherSelector.kind === 'email_file'
+      ? '⚠️  @任务发布人通知发送失败'
+      : `⚠️  @通知发送失败: ${result.notifyError}`);
   } else if (result.notifyMessageId) {
     console.error(`✅ @通知已发送 (msg ${result.notifyMessageId})`);
   }
@@ -8182,6 +8314,7 @@ botmux create-group — 用一组机器人新建飞书群
   }
   const completion = createGroupCompletionStatus({
     chatId: result.chatId,
+    ownerMemberDigest,
     collaborationReady,
     kickoffRequested,
     kickoffMessageId: result.kickoffMessageId,

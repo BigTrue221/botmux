@@ -171,6 +171,7 @@ describe('buildConfigCard', () => {
       modelChoices: [],
       lang: null,
       p2pMode: null,
+      allowedUsersMode: 'all',
       brandLabel: null,
       defaultWorkingDir: null,
       autoStartPrompt: null,
@@ -196,6 +197,11 @@ describe('buildConfigCard', () => {
     expect(toggle.value.action).toBe('config_toggle');
     expect(toggle.type).toBe('primary');
     expect(toggle.text.content).toContain('Disable status reactions');
+
+    const accessMode = allActions(card).find((a: any) => a.value?.field === 'allowedUsersMode');
+    expect(accessMode).toBeTruthy();
+    expect(accessMode.value.action).toBe('config_set');
+    expect(accessMode.initial_option).toBe('all');
   });
 });
 

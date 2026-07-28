@@ -15,6 +15,7 @@ import {
   resolveBotRefs,
   resolveKickoff,
   shouldWriteCreateGroupCompletionStatus,
+  verifyCreateGroupPublisherMembership,
 } from '../src/cli/create-group-resolver.js';
 
 const CFG_CLAUDE = { larkAppId: 'cli_claude_1', cliId: 'claude-code' };
@@ -176,6 +177,7 @@ describe('createGroupCompletionStatus', () => {
       success: false,
       chatCreated: true,
       chatId: 'oc_created',
+      ownerMemberDigest: null,
       collaborationReady: true,
       kickoffAccepted: false,
       kickoffRequested: true,
@@ -209,6 +211,29 @@ describe('createGroupCompletionStatus', () => {
     });
   });
 
+  it('carries only the safe owner member digest in structured status', () => {
+    const digest = 'a'.repeat(64);
+    expect(createGroupCompletionStatus({
+      chatId: 'oc_created',
+      ownerMemberDigest: digest,
+      collaborationReady: true,
+      kickoffRequested: false,
+      kickoffMessageId: null,
+      kickoffError: null,
+    })).toMatchObject({
+      success: true,
+      ownerMemberDigest: digest,
+    });
+    expect(createGroupCompletionStatus({
+      chatId: 'oc_created',
+      ownerMemberDigest: 'ou_must_not_escape',
+      collaborationReady: true,
+      kickoffRequested: false,
+      kickoffMessageId: null,
+      kickoffError: null,
+    }).ownerMemberDigest).toBeNull();
+  });
+
   it('keeps successful default stdout as the historical single chatId line', () => {
     const success = createGroupCompletionStatus({
       chatId: 'oc_created',
@@ -231,5 +256,53 @@ describe('createGroupCompletionStatus', () => {
     // non-zero result must leave stdout as the single early chatId line.
     expect(shouldWriteCreateGroupCompletionStatus(partial, false)).toBe(false);
     expect(shouldWriteCreateGroupCompletionStatus(partial, true)).toBe(true);
+  });
+});
+
+describe('verifyCreateGroupPublisherMembership', () => {
+  const targetOpenId = 'ou_publisher';
+
+  it('accepts only the exact live member when the invitation was not rejected', async () => {
+    await expect(verifyCreateGroupPublisherMembership({
+      targetOpenId,
+      invalidUserIds: [],
+      resolveLiveOpenId: async () => targetOpenId,
+    })).resolves.toBe(true);
+  });
+
+  it('fails closed for a missing, ambiguous, or mismatched live member', async () => {
+    await expect(verifyCreateGroupPublisherMembership({
+      targetOpenId,
+      invalidUserIds: [],
+      resolveLiveOpenId: async () => null,
+    })).resolves.toBe(false);
+    await expect(verifyCreateGroupPublisherMembership({
+      targetOpenId,
+      invalidUserIds: [],
+      resolveLiveOpenId: async () => 'ou_other',
+    })).resolves.toBe(false);
+  });
+
+  it('fails closed when the create response rejected the publisher invitation', async () => {
+    let liveLookupCalled = false;
+    await expect(verifyCreateGroupPublisherMembership({
+      targetOpenId,
+      invalidUserIds: [targetOpenId],
+      resolveLiveOpenId: async () => {
+        liveLookupCalled = true;
+        return targetOpenId;
+      },
+    })).resolves.toBe(false);
+    expect(liveLookupCalled).toBe(true);
+  });
+
+  it('fails closed without exposing provider errors', async () => {
+    await expect(verifyCreateGroupPublisherMembership({
+      targetOpenId,
+      invalidUserIds: [],
+      resolveLiveOpenId: async () => {
+        throw new Error('provider included raw identity');
+      },
+    })).resolves.toBe(false);
   });
 });

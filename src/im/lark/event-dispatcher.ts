@@ -1175,6 +1175,7 @@ export type ChatKind = 'group' | 'p2p';
 
 export type TalkReason =
   | 'allowedUser'
+  | 'allowedUsersAll'
   | 'oncall'
   | 'peer'
   | 'teamBot'
@@ -1226,6 +1227,9 @@ function hasGlobalGrant(larkAppId: string, openId: string | undefined): boolean 
  */
 function hasConfiguredAllowlist(bot: ReturnType<typeof getBot>): boolean {
   return (bot.config.allowedUsers?.length ?? 0) > 0
+    // All 是 talk-open 档位，不是 legacy「无配置」开放模式。把它计入权限边界，
+    // 保证 canOperate 在没有 operator 名单时 fail-closed。
+    || bot.config.allowedUsersMode === 'all'
     || (bot.config.allowedChatGroups?.length ?? 0) > 0
     || (bot.config.globalGrants?.length ?? 0) > 0
     // p2pOpen 也是一次显式的权限边界声明：配了它 = 进入限制态。否则「只配 p2pOpen、
@@ -1261,6 +1265,15 @@ export function evaluateTalk(
   // 成员关系隐含在"能在该 chat 发言"里 —— 退群者发不了言自动失权，新人进群即生效，无需成员快照。
   const allowedUsers = bot.resolvedAllowedUsers;
   if (senderOpenId && allowedUsers.includes(senderOpenId)) return { allowed: true, reason: 'allowedUser' };
+  // All 档把飞书/Lark 应用可用范围作为人员访问权威：事件已经由平台投递且带有
+  // 可验证发送者身份时，普通对话不再做 botmux 逐人拦截。它不读取 chatType，
+  // 因而同时覆盖私聊、群聊和 daemon 内部的二次 quota 复查。
+  //
+  // 必须至少有一种已验证身份；内部合成/畸形调用缺少 actor 时仍 fail-closed。
+  // canOperate 完全不读该档位，管理权限仍只认 resolved allowedUsers。
+  if (bot.config.allowedUsersMode === 'all' && (senderOpenId || senderUnionId || memberUnionId)) {
+    return { allowed: true, reason: 'allowedUsersAll' };
+  }
   // Oncall 群命中：默认不限额；仅当 bot 配了 messageQuota.defaultLimit 时，
   // 才挂 chat:<chatId>:<openId> 这一 quotaKey（与 chatGrant 同键、同计数器，
   // 便于 owner 后续 /grant @x N 续杯/重置）。

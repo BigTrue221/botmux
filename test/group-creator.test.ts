@@ -196,6 +196,34 @@ describe('createGroupWithBots', () => {
     });
   });
 
+  it('suppresses the private owner notification hook without changing its Lark mention', async () => {
+    mockCreateChat.mockResolvedValue({
+      chatId: 'oc_private_owner',
+      invalidBotIds: [],
+      invalidUserIds: [],
+    });
+    mockSendMessage.mockResolvedValue('om_private_owner_notify');
+
+    const result = await createGroupWithBots({
+      creatorLarkAppId: CREATOR,
+      larkAppIds: [CREATOR],
+      notifyOwnerOpenId: USER_OPEN_ID,
+      suppressOwnerNotifyHook: true,
+    });
+
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      CREATOR,
+      'oc_private_owner',
+      `<at user_id="${USER_OPEN_ID}"></at>`,
+      'text',
+      undefined,
+      undefined,
+      { suppressHook: true },
+    );
+    expect(result.notifyMessageId).toBe('om_private_owner_notify');
+    expect(result.notifyError).toBeNull();
+  });
+
   it('falls back (shareLink null + shareLinkError set) when the link API fails', async () => {
     mockCreateChat.mockResolvedValue({ chatId: 'oc_x', invalidBotIds: [], invalidUserIds: [] });
     mockGetChatShareLink.mockResolvedValue({ ok: false, error: 'unsupported chat type (code: 232001)' });

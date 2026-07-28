@@ -45,6 +45,9 @@ export interface CreateGroupCompletionStatus {
   success: boolean;
   chatCreated: true;
   chatId: string;
+  /** Domain-separated digest of the invited owner in the creator App scope.
+   * Safe for a later exact-chat membership lookup; never exposes open_id. */
+  ownerMemberDigest: string | null;
   collaborationReady: boolean;
   kickoffAccepted: boolean;
   kickoffRequested: boolean;
@@ -57,6 +60,7 @@ export interface CreateGroupCompletionStatus {
  * explicitly requested kickoff was accepted. */
 export function createGroupCompletionStatus(input: {
   chatId: string;
+  ownerMemberDigest?: string | null;
   collaborationReady: boolean;
   kickoffRequested: boolean;
   kickoffMessageId: string | null;
@@ -64,10 +68,15 @@ export function createGroupCompletionStatus(input: {
 }): CreateGroupCompletionStatus {
   const kickoffAccepted = !input.kickoffRequested
     || (!!input.kickoffMessageId && !input.kickoffError);
+  const ownerMemberDigest = typeof input.ownerMemberDigest === 'string'
+    && /^[0-9a-f]{64}$/.test(input.ownerMemberDigest)
+    ? input.ownerMemberDigest
+    : null;
   return {
     success: input.collaborationReady && kickoffAccepted,
     chatCreated: true,
     chatId: input.chatId,
+    ownerMemberDigest,
     collaborationReady: input.collaborationReady,
     kickoffAccepted,
     kickoffRequested: input.kickoffRequested,
@@ -84,6 +93,29 @@ export function shouldWriteCreateGroupCompletionStatus(
   explicitJsonStatus: boolean,
 ): boolean {
   return explicitJsonStatus;
+}
+
+/**
+ * After chat creation, re-prove that the exact publisher is a current member
+ * in the creator App's live view. The resolver is expected to have already
+ * applied the domain-separated digest and unique-match rule. Any provider
+ * error, missing/ambiguous match, mismatch, or create response rejection fails
+ * closed while the caller preserves the already-created chat.
+ */
+export async function verifyCreateGroupPublisherMembership(input: {
+  targetOpenId: string;
+  invalidUserIds: readonly string[];
+  resolveLiveOpenId: () => Promise<string | null>;
+}): Promise<boolean> {
+  try {
+    const liveOpenId = await input.resolveLiveOpenId();
+    return (
+      !input.invalidUserIds.includes(input.targetOpenId)
+      && liveOpenId === input.targetOpenId
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function resolveBotRefs(

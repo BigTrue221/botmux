@@ -102,7 +102,18 @@ export function buildConfigCard(data: ConfigCardData, locale?: Locale): string {
       ];
       elements.push({
         tag: 'action',
-        actions: [configSelect(t('card.config.quota_label', undefined, locale), data.quota == null ? 'off' : String(data.quota), qOpts, { action: 'config_quota', ...locVal })],
+        actions: [
+          configSelect(
+            t('card.config.access.placeholder', undefined, locale),
+            data.allowedUsersMode,
+            [
+              { text: t('card.config.access.allowlist', undefined, locale), value: 'allowlist' },
+              { text: t('card.config.access.all', undefined, locale), value: 'all' },
+            ],
+            { action: 'config_set', field: 'allowedUsersMode', ...locVal },
+          ),
+          configSelect(t('card.config.quota_label', undefined, locale), data.quota == null ? 'off' : String(data.quota), qOpts, { action: 'config_quota', ...locVal }),
+        ],
       });
     }
   }

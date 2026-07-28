@@ -139,6 +139,16 @@ describe('parseSetupCommand', () => {
     expect(() => parseSetupCommand(['edit', 'botmux-0', '--model'])).toThrow(/--model 缺少取值/);
   });
 
+  it('parses the explicit allowedUsers All access tier', () => {
+    expect(parseSetupCommand([
+      'edit', 'botmux-0', '--allowed-users-mode', 'all',
+    ])).toMatchObject({
+      action: 'edit',
+      selector: 'botmux-0',
+      flags: { allowedUsersMode: 'all' },
+    });
+  });
+
   it('rejects unknown flags and positionals on add', () => {
     expect(() => parseSetupCommand(['add', '--nope', 'x'])).toThrow(/未知参数 --nope/);
     expect(() => parseSetupCommand(['add', 'stray'])).toThrow(/不接受位置参数/);
@@ -175,6 +185,13 @@ describe('buildBotFromAddFlags', () => {
       cliId: 'claude-code',
       workingDir: '~',
       allowedUsers: ['alice@example.com'],
+    });
+  });
+
+  it('persists allowedUsersMode=all while retaining an explicit operator', () => {
+    expect(buildBotFromAddFlags({ ...REQUIRED, allowedUsersMode: 'all' } as any)).toMatchObject({
+      allowedUsers: ['alice@example.com'],
+      allowedUsersMode: 'all',
     });
   });
 

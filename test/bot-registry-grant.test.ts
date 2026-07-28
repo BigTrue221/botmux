@@ -2,6 +2,22 @@ import { describe, it, expect } from 'vitest';
 import { parseBotConfigsFromText, getOwnerOpenId, registerBot } from '../src/bot-registry.js';
 
 describe('bot-registry grant additions', () => {
+  it('parseBotConfigsFromText preserves supported allowedUsersMode values and ignores unknown values', () => {
+    const cfgs = parseBotConfigsFromText(JSON.stringify([
+      { larkAppId: 'aum1', larkAppSecret: 's', allowedUsersMode: 'all' },
+      { larkAppId: 'aum2', larkAppSecret: 's', allowedUsersMode: 'allowlist' },
+      { larkAppId: 'aum3', larkAppSecret: 's', allowedUsersMode: 'everyone' },
+      { larkAppId: 'aum4', larkAppSecret: 's' },
+    ]));
+
+    expect(cfgs.map((config) => config.allowedUsersMode)).toEqual([
+      'all',
+      'allowlist',
+      undefined,
+      undefined,
+    ]);
+  });
+
   it('parseBotConfigsFromText preserves & filters chatReplyModes (four-state incl. chat-topic)', () => {
     const cfgs = parseBotConfigsFromText(JSON.stringify([{
       larkAppId: 'rm1', larkAppSecret: 's',

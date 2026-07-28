@@ -72,16 +72,38 @@ describe('bot-config store', () => {
     return { registry, store };
   }
 
-  it('CONFIG_FIELDS have unique keys and include allowedUsers', async () => {
+  it('CONFIG_FIELDS have unique keys and include allowedUsers access controls', async () => {
     const { store } = await freshModules();
     const keys = store.CONFIG_FIELDS.map(f => f.key);
     expect(new Set(keys).size).toBe(keys.length);
     expect(keys).toContain('allowedUsers');
+    expect(store.findConfigField('allowedUsersMode')).toMatchObject({
+      kind: 'enum',
+      enumValues: ['allowlist', 'all'],
+      effect: 'immediate',
+      clearable: true,
+    });
     expect(keys).toContain('model');
     expect(keys).not.toContain('repoPickerMode');
     expect(keys).toContain('skills');
     expect(keys).toContain('silentTurnReactions');
     expect(keys).toContain('codexAppCleanInput');
+  });
+
+  it('sets and clears allowedUsersMode without a daemon restart', async () => {
+    const { registry, store } = await loaded();
+    const spec = store.findConfigField('allowedUsersMode')!;
+
+    const applied = await store.applyConfigField('app_default', spec, 'all');
+    expect(applied.ok).toBe(true);
+    if (applied.ok) expect(applied.effect).toBe('immediate');
+    expect(readConfig().allowedUsersMode).toBe('all');
+    expect(registry.getBot('app_default').config.allowedUsersMode).toBe('all');
+
+    const cleared = await store.applyConfigField('app_default', spec, null);
+    expect(cleared.ok).toBe(true);
+    expect(readConfig().allowedUsersMode).toBeUndefined();
+    expect(registry.getBot('app_default').config.allowedUsersMode).toBeUndefined();
   });
 
   it('parseBooleanValue accepts on/off variants and rejects junk', async () => {
@@ -577,12 +599,13 @@ describe('bot-config store', () => {
     expect(store.coerceConfigValue(cliSpec, 'bogus-cli')).toEqual({ ok: false, reason: 'invalid_cli' });
   });
 
-  it('getConfigCardData returns the card view (booleans + cli options + model choices)', async () => {
-    const { store } = await loaded({ model: 'opus', disableStreamingCard: true });
+  it('getConfigCardData returns the card view (access mode + booleans + cli options + model choices)', async () => {
+    const { store } = await loaded({ model: 'opus', allowedUsersMode: 'all', disableStreamingCard: true });
     const data = store.getConfigCardData('app_default', ['opus', 'sonnet']);
     expect(data).not.toBeNull();
     expect(data!.cliId).toBe('claude-code');
     expect(data!.model).toBe('opus');
+    expect(data!.allowedUsersMode).toBe('all');
     expect(data!.modelChoices).toEqual(['opus', 'sonnet']);
     expect(data!.cliOptions.length).toBeGreaterThan(0);
     expect(data!.booleans.find(b => b.key === 'disableStreamingCard')?.on).toBe(true);

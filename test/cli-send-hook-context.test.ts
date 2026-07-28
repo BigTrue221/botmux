@@ -73,8 +73,43 @@ describe('cmdSend hook context wiring', () => {
     expect(cmdSend).toMatch(/sessionQuoteTargetId: vcMeetingDeliveryReplyOrigin\s*\? undefined/);
     expect(cmdSend).toContain('const prepared = prepareVcMeetingListenerReply(proposedOutput);');
     expect(cmdSend).toMatch(/canonicalOutput\.msgType,[\s\S]*?prepared\?\.providerKey/);
-    expect(cmdSend).toContain('...(prepared ? { suppressHook: true } : {})');
+    expect(cmdSend).toContain(
+      '...((prepared || suppressPrivatePublisherHook) ? { suppressHook: true } : {})',
+    );
     expect(cmdSend).toContain('const managedProviderOptions = prepared');
     expect(cmdSend).toContain('...(vcMeetingManagedSendOrigin ? { maxMessages: 1 } : {})');
+  });
+
+  it('suppresses hooks only for the two private publisher identity paths', () => {
+    const cmdSendStart = cliSource.indexOf('async function cmdSend(');
+    const cmdDispatchStart = cliSource.indexOf('async function cmdDispatch(', cmdSendStart);
+    const cmdSend = cliSource.slice(cmdSendStart, cmdDispatchStart);
+
+    expect(cmdSend).toContain(
+      "const suppressPrivatePublisherHook = publisherMention.kind === 'chat_member_digest';",
+    );
+    expect(cmdSend).toContain(
+      'const suppressOutboundHook = suppressHook || suppressPrivatePublisherHook;',
+    );
+    expect(cliSource).toContain(
+      "suppressOwnerNotifyHook: publisherSelector.kind === 'email_file',",
+    );
+  });
+
+  it('validates private member routing before voice or provider side effects', () => {
+    const cmdSendStart = cliSource.indexOf('async function cmdSend(');
+    const cmdDispatchStart = cliSource.indexOf('async function cmdDispatch(', cmdSendStart);
+    const cmdSend = cliSource.slice(cmdSendStart, cmdDispatchStart);
+    const selectorValidation = cmdSend.indexOf(
+      'const publisherMention = validateSendPublisherMentionSelector({',
+    );
+
+    expect(selectorValidation).toBeGreaterThanOrEqual(0);
+    expect(cmdSend).toContain('voice: asVoice');
+    expect(cmdSend).toContain('into: sendInto !== undefined');
+    expect(cmdSend).toContain('explicitQuote: explicitQuote !== undefined');
+    expect(selectorValidation).toBeLessThan(cmdSend.indexOf('if (asVoice) {'));
+    expect(selectorValidation).toBeLessThan(cmdSend.indexOf("const { uploadFile, sendMessage, replyMessage }"));
+    expect(selectorValidation).toBeLessThan(cmdSend.indexOf('resolveChatMemberOpenIdByDigest('));
   });
 });
